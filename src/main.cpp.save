@@ -1,0 +1,141 @@
+#include <Arduino.h>
+#include <SPI.h>
+#include <TFT_eSPI.h>
+#include <XPT2046_Touchscreen.h>
+
+#include "clock_manager.h"
+#include "countdown_manager.h"
+#include "display_init.h"
+#include "pins.h"
+#include "settings_manager.h"
+#include "touch_map.h"
+#include "ui_manager.h"
+#include "web_server.h"
+#include "wifi_manager.h"
+
+TFT_eSPI tft;
+XPT2046_Touchscreen touch(Pins::kTouchCs, Pins::kTouchIrq);
+
+SettingsManager settingsManager;
+ClockManager clockManager(settingsManager);
+CountdownManager countdownManager(settingsManager);
+WiFiManagerWrapper wifiManager;
+WebServerManager webServer(settingsManager, clockManager, wifiManager);
+UIManager uiManager(settingsManager, clockManager, countdownManager);
+
+void setup() {
+  Serial.begin(115200);
+  delay(200);
+  Serial.println();
+  Serial.println("==========================================");
+  Serial.println("CYD Smart Clock & Countdown Display");
+  Serial.println("Hardware: ESP32-32E + ST7796S + XPT2046");
+  Serial.println("==========================================");
+
+  // Initialize backlight pin
+  pinMode(Pins::kTftBl, OUTPUT);
+  digitalWrite(Pins::kTftBl, HIGH);
+
+  // Initialize Chip Selects
+  pinMode(Pins::kTftCs, OUTPUT);
+  pinMode(Pins::kTouchCs, OUTPUT);
+  digitalWrite(Pins::kTftCs, HIGH);
+  digitalWrite(Pins::kTouchCs, HIGH);
+
+  // Shared SPI Bus
+  SPI.begin(Pins::kSpiSck, Pins::kSpiMiso, Pins::kSpiMosi, Pins::kTftCs);
+
+  // Initialize Display (ST7796S manufacturer sequence + orientation)
+  tft.init();
+  applyManufacturerSt7796Init(tft);
+  tft.setRotation(1);
+  tft.writecommand(0x36);
+  tft.writedata(0x28);
+
+  // Initialize Touch
+  touch.begin(SPI);
+
+  // Initialize Settings & Countdowns
+  if (!settingsManager.begin()) {
+    Serial.println("Failed to initialize SettingsManager");
+  }
+
+  // Set Backlight Brightness from settings
+  analogWrite(Pins::kTftBl, settingsManager.getSettings().brightness);
+
+  // Initialize UI Manager & show startup screen
+  uiManager.setWifiManager(&wifiManager);
+  uiManager.begin(tft, touch);
+
+  // Initialize Wi-Fi (autoConnect or AP mode)
+  wifiManager.begin();
+
+  // Initialize Clock & NTP time sync
+  clockManager.begin();
+
+  // Initialize Web Server
+  webServer.begin();
+
+  Serial.println("Setup completed successfully.");
+}
+ delay(200);
+  Serial.println();
+  Serial.println("==========================================");
+  Serial.println("CYD Smart Clock & Countdown Display");
+  Serial.println("Hardware: ESP32-32E + ST7796S + XPT2046");
+  Serial.println("==========================================");
+
+  // Initialize backlight pin
+  pinMode(Pins::kTftBl, OUTPUT);
+  digitalWrite(Pins::kTftBl, HIGH);
+
+  // Initialize Chip Selects
+  pinMode(Pins::kTftCs, OUTPUT);
+  pinMode(Pins::kTouchCs, OUTPUT);
+  digitalWrite(Pins::kTftCs, HIGH);
+  digitalWrite(Pins::kTouchCs, HIGH);
+
+  // Shared SPI Bus
+  SPI.begin(Pins::kSpiSck, Pins::kSpiMiso, Pins::kSpiMosi, Pins::kTftCs);
+
+  // Initialize Display (ST7796S manufacturer sequence + orientation)
+  tft.init();
+  applyManufacturerSt7796Init(tft);
+  tft.setRotation(1);
+  tft.writecommand(0x36);
+  tft.writedata(0x28);
+  
+  // Initialize Touch
+  touch.begin(SPI);  
+  
+  // Initialize Settings & Countdowns
+  if (!settingsManager.begin()) {
+    Serial.println("Failed to initialize SettingsManager");
+  }
+  
+  // Set Backlight Brightness from settings
+  analogWrite(Pins::kTftBl, settingsManager.getSettings().brightness);
+
+  // Initialize UI Manager & show startup screen
+  uiManager.setWifiManager(&wifiManager);
+  uiManager.begin(tft, touch);
+  
+  // Initialize Wi-Fi (autoConnect or AP mode)
+  wifiManager.begin();
+  
+  // Initialize Clock & NTP time sync
+  clockManager.begin();
+  
+  // Initialize Web Server
+  webServer.begin();
+  
+  Serial.println("Setup completed successfully.");
+}
+
+void loop() {
+  wifiManager.loop();
+  clockManager.update();
+  uiManager.loop(tft, touch);
+  webServer.loop();
+  delay(16);
+}

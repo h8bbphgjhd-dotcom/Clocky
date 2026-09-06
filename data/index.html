@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#0d1b2a">
+  <title>CYD Clock</title>
+  <link rel="stylesheet" href="/style.css">
+  <link rel="manifest" href="/manifest.json">
+</head>
+<body>
+  <header class="header">
+    <h1>CYD Clock</h1>
+    <div class="connection-status" id="connectionStatus">
+      <span class="status-dot"></span>
+      <span>Connecting...</span>
+    </div>
+  </header>
+
+  <main class="main">
+    <nav class="tabs" role="tablist">
+      <button class="tab active" role="tab" data-tab="clock">Clock</button>
+      <button class="tab" role="tab" data-tab="countdowns">Countdowns</button>
+      <button class="tab" role="tab" data-tab="settings">Settings</button>
+    </nav>
+
+    <section class="tab-panel active" id="tab-clock" role="tabpanel">
+      <div class="clock-preview">
+        <div class="preview-time" id="previewTime">--:--:--</div>
+        <div class="preview-date" id="previewDate">--</div>
+        <div class="preview-weekday" id="previewWeekday">--</div>
+        <div class="preview-countdown" id="previewCountdown"></div>
+      </div>
+    </section>
+
+    <section class="tab-panel" id="tab-countdowns" role="tabpanel">
+      <div class="panel-header">
+        <h2>Countdowns</h2>
+        <button class="btn btn-primary" id="addCountdownBtn">+ Add</button>
+      </div>
+      <div class="countdown-list" id="countdownList"></div>
+    </section>
+
+    <section class="tab-panel" id="tab-settings" role="tabpanel">
+      <div class="settings-sections">
+        <section class="settings-section">
+          <h3>Wi-Fi</h3>
+          <div class="wifi-status">
+            <div class="info-row">
+              <span>Status:</span>
+              <span id="wifiStatus">Unknown</span>
+            </div>
+            <div class="info-row">
+              <span>SSID:</span>
+              <span id="wifiSSID">--</span>
+            </div>
+            <div class="info-row">
+              <span>IP Address:</span>
+              <span id="wifiIP">--</span>
+            </div>
+            <div class="info-row">
+              <span>Signal:</span>
+              <span id="wifiRSSI">--</span>
+            </div>
+            <button class="btn btn-secondary" id="scanWifiBtn">Scan Networks</button>
+            <button class="btn btn-danger" id="forgetWifiBtn">Forget Wi-Fi</button>
+          </div>
+          <div class="wifi-networks" id="wifiNetworks" style="display:none;"></div>
+        </section>
+
+        <section class="settings-section">
+          <h3>Time</h3>
+          <div class="setting-row">
+            <label>Timezone</label>
+            <select id="timezoneSelect"></select>
+          </div>
+          <div class="setting-row">
+            <label>Format</label>
+            <select id="timeFormatSelect">
+              <option value="12">12 Hour (AM/PM)</option>
+              <option value="24">24 Hour</option>
+            </select>
+          </div>
+        </section>
+
+        <section class="settings-section">
+          <h3>Display</h3>
+          <div class="setting-row">
+            <label>Layout</label>
+            <select id="layoutSelect">
+              <option value="0">Digital</option>
+              <option value="1">Minimal</option>
+              <option value="2">Analog</option>
+              <option value="3">Focus</option>
+            </select>
+          </div>
+          <div class="setting-row">
+            <label>Theme</label>
+            <select id="themeSelect">
+              <option value="0">Default</option>
+              <option value="1">Nord</option>
+              <option value="2">Dracula</option>
+              <option value="3">Solarized Light</option>
+              <option value="4">High Contrast</option>
+              <option value="5">Warm</option>
+            </select>
+          </div>
+          <div class="setting-row">
+            <label>Brightness</label>
+            <input type="range" id="brightnessSlider" min="0" max="255" value="200">
+            <span id="brightnessValue">200</span>
+          </div>
+        </section>
+
+        <section class="settings-section">
+          <h3>About</h3>
+          <div class="info-row">
+            <span>Firmware:</span>
+            <span id="fwVersion">1.0.0</span>
+          </div>
+          <div class="info-row">
+            <span>Uptime:</span>
+            <span id="uptime">--</span>
+          </div>
+          <div class="info-row">
+            <span>Free Heap:</span>
+            <span id="freeHeap">--</span>
+          </div>
+          <button class="btn btn-danger" id="rebootBtn">Reboot Device</button>
+        </section>
+      </div>
+    </section>
+  </main>
+
+  <!-- Countdown Modal -->
+  <div class="modal" id="countdownModal" role="dialog" aria-modal="true">
+    <div class="modal-content">
+      <h3 id="modalTitle">Add Countdown</h3>
+      <form id="countdownForm">
+        <input type="hidden" id="editCountdownId">
+        <div class="form-row">
+          <label>Name</label>
+          <input type="text" id="cdName" required maxlength="31" placeholder="Christmas">
+        </div>
+        <div class="form-row">
+          <label>Date</label>
+          <input type="date" id="cdDate" required>
+        </div>
+        <div class="form-row">
+          <label>Time (optional)</label>
+          <input type="time" id="cdTime">
+        </div>
+        <div class="form-row">
+          <label>Color</label>
+          <input type="color" id="cdColor" value="#00ffff">
+        </div>
+        <div class="form-row checkbox-row">
+          <label class="checkbox-label">
+            <input type="checkbox" id="cdShowOnMain" checked>
+            <span>Show on main clock</span>
+          </label>
+        </div>
+        <div class="form-row checkbox-row">
+          <label class="checkbox-label">
+            <input type="checkbox" id="cdHideWhenExpired">
+            <span>Hide when expired</span>
+          </label>
+        </div>
+        <div class="form-actions">
+          <button type="button" class="btn btn-secondary" id="cancelCountdownBtn">Cancel</button>
+          <button type="submit" class="btn btn-primary">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
