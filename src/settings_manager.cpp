@@ -144,6 +144,7 @@ const Countdown* SettingsManager::getNextCountdown() const {
   
   for (int i = 0; i < countdownCount_; i++) {
     const Countdown& cd = countdowns_[i];
+    if (!cd.showOnMain) continue;
     if (cd.targetDate <= now) continue;  // Skip expired
     
     time_t diff = cd.targetDate - now;

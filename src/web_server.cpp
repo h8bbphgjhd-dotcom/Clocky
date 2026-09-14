@@ -9,8 +9,8 @@
 // Static instance pointers for callbacks
 static WebServerManager* g_instance = nullptr;
 
-WebServerManager::WebServerManager(SettingsManager& settings, ClockManager& clock, WiFiManagerWrapper& wifi)
-  : settings_(settings), clock_(clock), wifi_(wifi) {
+WebServerManager::WebServerManager(SettingsManager& settings, ClockManager& clock, WiFiManagerWrapper& wifi, FocusTimer& focus)
+  : settings_(settings), clock_(clock), wifi_(wifi), focus_(focus) {
   g_instance = this;
 }
 
@@ -71,6 +71,42 @@ void WebServerManager::setupRoutes() {
   DefaultHeaders::Instance().addHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
   DefaultHeaders::Instance().addHeader("Access-Control-Allow-Headers", "Content-Type");
   
+  auto sendFocus = [](AsyncWebServerRequest* request) {
+    const auto state = g_instance->focus_.snapshot(millis());
+    JsonDocument doc;
+    doc["durationSeconds"] = state.durationSeconds;
+    doc["remainingSeconds"] = state.remainingSeconds;
+    doc["running"] = state.running;
+    doc["completed"] = state.completed;
+    doc["completedSessions"] = state.completedSessions;
+    String body;
+    serializeJson(doc, body);
+    request->send(200, "application/json", body);
+  };
+  server_->on("/api/focus", HTTP_GET, sendFocus);
+  server_->on("/api/focus", HTTP_POST, [sendFocus](AsyncWebServerRequest* request, JsonVariant& json) {
+    const char* action = json["action"] | "";
+    const uint32_t now = millis();
+    if (strcmp(action, "start") == 0) {
+      int seconds = json["durationSeconds"] | 1500;
+      if (seconds < 60 || seconds > 5400) {
+        request->send(400, "application/json", "{\"error\":\"Choose a duration from 1 to 90 minutes\"}");
+        return;
+      }
+      g_instance->focus_.start(seconds, now);
+    } else if (strcmp(action, "pause") == 0) {
+      g_instance->focus_.pause(now);
+    } else if (strcmp(action, "resume") == 0) {
+      g_instance->focus_.resume(now);
+    } else if (strcmp(action, "reset") == 0) {
+      g_instance->focus_.reset(now);
+    } else {
+      request->send(400, "application/json", "{\"error\":\"Unknown timer action\"}");
+      return;
+    }
+    sendFocus(request);
+  });
+
   // API: Settings
   server_->on("/api/settings", HTTP_GET, [](AsyncWebServerRequest* request) {
     handleGetSettings(request);
@@ -365,7 +401,8 @@ void WebServerManager::handleGetStatus(AsyncWebServerRequest* request) {
   doc["freeHeap"] = ESP.getFreeHeap();
   doc["timeSynced"] = g_instance->clock_.isTimeSynced();
   doc["timezone"] = g_instance->clock_.getTimezone();
-  doc["firmwareVersion"] = "1.0.0";
+  doc["firmwareVersion"] = "1.1.0";
+  doc["epoch"] = time(nullptr);
   
   String json;
   serializeJson(doc, json);
@@ -457,6 +494,13 @@ void WebServerManager::broadcastTime() {
   doc["time"] = timeBuf;
   doc["date"] = dateBuf;
   doc["weekday"] = weekdayBuf;
+  doc["epoch"] = time(nullptr);
+  const auto focus = focus_.snapshot(millis());
+  doc["focus"]["durationSeconds"] = focus.durationSeconds;
+  doc["focus"]["remainingSeconds"] = focus.remainingSeconds;
+  doc["focus"]["running"] = focus.running;
+  doc["focus"]["completed"] = focus.completed;
+  doc["focus"]["completedSessions"] = focus.completedSessions;
   
   String json;
   serializeJson(doc, json);

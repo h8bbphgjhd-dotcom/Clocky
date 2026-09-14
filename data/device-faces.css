@@ -1,0 +1,56 @@
+.layout-picker {
+  max-width: 470px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.clock-preview[data-layout="4"] .preview-time {
+  display: inline-block;
+  padding: 12px 28px;
+  border-radius: 10px;
+  background: linear-gradient(
+    to bottom,
+    var(--clock-panel) 49%,
+    var(--clock-muted) 49%,
+    var(--clock-muted) 50%,
+    var(--clock-panel) 50%
+  );
+  box-shadow: inset 0 1px #ffffff10;
+}
+
+.clock-preview[data-layout="5"] .preview-time {
+  font-family: monospace;
+  font-weight: 900;
+  letter-spacing: -7px;
+  text-shadow: 4px 4px 0 var(--clock-panel);
+}
+
+.clock-preview[data-layout="5"] .preview-weekday {
+  font-family: monospace;
+  font-size: 14px;
+  font-style: normal;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+}
+
+.clock-preview[data-layout="6"] .preview-time {
+  font-weight: 250;
+  letter-spacing: -6px;
+}
+
+.clock-preview[data-layout="6"] .preview-countdown {
+  border: 1px solid var(--clock-panel);
+  background: transparent;
+}
+
+@media (max-width: 850px) {
+  .layout-picker {
+    max-width: min(430px, 72vw);
+  }
+}
+
+@media (max-width: 620px) {
+  .layout-picker {
+    max-width: 70vw;
+  }
+}

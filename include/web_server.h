@@ -5,10 +5,11 @@
 #include "settings_manager.h"
 #include "clock_manager.h"
 #include "wifi_manager.h"
+#include "focus_timer.h"
 
 class WebServerManager {
  public:
-  WebServerManager(SettingsManager& settings, ClockManager& clock, WiFiManagerWrapper& wifi);
+  WebServerManager(SettingsManager& settings, ClockManager& clock, WiFiManagerWrapper& wifi, FocusTimer& focus);
   ~WebServerManager();
   
   void begin();
@@ -19,6 +20,7 @@ class WebServerManager {
   SettingsManager& settings_;
   ClockManager& clock_;
   WiFiManagerWrapper& wifi_;
+  FocusTimer& focus_;
   AsyncWebServer* server_ = nullptr;
   AsyncWebSocket* ws_ = nullptr;
   

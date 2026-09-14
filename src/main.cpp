@@ -21,8 +21,9 @@ SettingsManager settingsManager;
 ClockManager clockManager(settingsManager);
 CountdownManager countdownManager(settingsManager);
 WiFiManagerWrapper wifiManager;
-WebServerManager webServer(settingsManager, clockManager, wifiManager);
-UIManager uiManager(settingsManager, clockManager, countdownManager);
+FocusTimer focusTimer;
+WebServerManager webServer(settingsManager, clockManager, wifiManager, focusTimer);
+UIManager uiManager(settingsManager, clockManager, countdownManager, focusTimer);
 
 void setup() {
   Serial.begin(115200);
@@ -118,6 +119,7 @@ void setup() {
 void loop() {
   wifiManager.loop();
   clockManager.update();
+  focusTimer.snapshot(millis());
   uiManager.loop(tft, touch);
   webServer.loop();
   delay(16);

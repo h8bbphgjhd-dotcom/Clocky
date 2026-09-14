@@ -24,17 +24,17 @@ const char* const kMonthNames[] = {
 };
 
 const char* const kLayoutNames[] = {
-  "Digital", "Minimal", "Analog", "Focus"
+  "Dashboard", "Minimal", "Analog", "Focus", "Flip", "Pixel", "Smooth"
 };
 
 const char* const kThemeNames[] = {
-  "Default", "Nord", "Dracula", "Solarized Light", "High Contrast", "Warm"
+  "Graphite", "Nord", "Dracula", "Paper", "Contrast", "Ember"
 };
 
 }  // namespace
 
-UIManager::UIManager(SettingsManager& settings, ClockManager& clock, CountdownManager& countdown)
-    : settings_(settings), clock_(clock), countdown_(countdown) {
+UIManager::UIManager(SettingsManager& settings, ClockManager& clock, CountdownManager& countdown, FocusTimer& focus)
+    : settings_(settings), clock_(clock), countdown_(countdown), focus_(focus) {
   memset(&currentTheme_, 0, sizeof(currentTheme_));
   memset(&touchState_, 0, sizeof(touchState_));
 }
@@ -46,17 +46,31 @@ void UIManager::begin(TFT_eSPI& tft, XPT2046_Touchscreen& touch) {
   lastSecond_ = -1;
   currentScreen_ = SCREEN_CLOCK;
   menuVisible_ = false;
+  displayedBrightness_ = brightnessTarget_ = settings_.getSettings().brightness;
+  brightnessFrom_ = displayedBrightness_;
+  renderedView_ = UINT32_MAX;
 
   tft.fillScreen(currentTheme_.bg);
 
-  // Splash message
+  // Minimal boot mark. The progress line is completed as each subsystem starts.
+  tft.drawCircle(kWidth / 2, 100, 25, currentTheme_.accent);
+  tft.drawWideLine(kWidth / 2, 100, kWidth / 2, 83, 3, currentTheme_.accent,
+                   currentTheme_.bg);
+  tft.drawWideLine(kWidth / 2, 100, kWidth / 2 + 14, 100, 3, currentTheme_.accent,
+                   currentTheme_.bg);
+  tft.fillCircle(kWidth / 2, 100, 3, currentTheme_.accent);
   tft.setTextDatum(MC_DATUM);
-  tft.setTextColor(currentTheme_.accent, currentTheme_.bg);
+  tft.setTextColor(currentTheme_.text, currentTheme_.bg);
   tft.setTextFont(4);
-  tft.drawString("CYD Smart Clock", kWidth / 2, kHeight / 2 - 20);
+  tft.drawString("clocky.", kWidth / 2, 153);
   tft.setTextColor(currentTheme_.textMuted, currentTheme_.bg);
   tft.setTextFont(2);
-  tft.drawString("Starting up...", kWidth / 2, kHeight / 2 + 20);
+  tft.drawString("A little more present.", kWidth / 2, 184);
+  tft.fillRoundRect(180, 216, 120, 3, 1, currentTheme_.panelAlt);
+  for (int width = 8; width <= 120; width += 8) {
+    tft.fillRoundRect(180, 216, width, 3, 1, currentTheme_.accent);
+    delay(10);
+  }
 }
 
 void UIManager::loop(TFT_eSPI& tft, XPT2046_Touchscreen& touch) {
@@ -69,8 +83,76 @@ void UIManager::loop(TFT_eSPI& tft, XPT2046_Touchscreen& touch) {
   render(tft, sample);
 }
 
+void UIManager::updateBacklight(uint32_t now, float visibility) {
+  const uint8_t target = settings_.getSettings().brightness;
+  if (target != brightnessTarget_) {
+    brightnessFrom_ = displayedBrightness_;
+    brightnessTarget_ = target;
+    brightnessStarted_ = now;
+  }
+  float progress = fminf(1.0f, (now - brightnessStarted_) / 180.0f);
+  progress = progress * progress * (3.0f - 2.0f * progress);
+  displayedBrightness_ = brightnessFrom_ + (brightnessTarget_ - brightnessFrom_) * progress;
+  const int level = static_cast<int>(displayedBrightness_ * visibility + 0.5f);
+  if (level != lastBacklight_) {
+    analogWrite(Pins::kTftBl, level);
+    lastBacklight_ = level;
+  }
+}
+
 void UIManager::render(TFT_eSPI& tft, const TouchCal::Sample& touch) {
-  handleTouch(tft, touch);
+  const uint32_t now = millis();
+  if (motionPhase_ == MotionPhase::Idle) {
+    if (waitForTouchRelease_) {
+      if (!touch.pressed) waitForTouchRelease_ = false;
+    } else {
+      handleTouch(tft, touch);
+    }
+  }
+
+  const Settings& settings = settings_.getSettings();
+  const uint32_t view = static_cast<uint32_t>(currentScreen_) |
+      (static_cast<uint32_t>(menuVisible_) << 3) |
+      (static_cast<uint32_t>(settings.layoutId) << 4) |
+      (static_cast<uint32_t>(settings.themeId) << 12) |
+      (static_cast<uint32_t>(countdownPage_) << 20);
+
+  if (motionPhase_ == MotionPhase::Idle && view != renderedView_) {
+    motionPhase_ = MotionPhase::FadeOut;
+    // The initial screen is revealed immediately from black.
+    motionStarted_ = renderedView_ == UINT32_MAX ? now - 100 : now;
+    touchState_ = TouchState{};
+    waitForTouchRelease_ = true;
+  }
+
+  if (motionPhase_ == MotionPhase::FadeOut) {
+    float progress = fminf(1.0f, (now - motionStarted_) / 100.0f);
+    progress = progress * progress * (3.0f - 2.0f * progress);
+    updateBacklight(now, 1.0f - progress);
+    if (progress < 1.0f) return;
+    // Redraw once while dark, then reveal; networking keeps running each frame.
+    applyTheme(settings.themeId);
+    screenNeedsRedraw_ = true;
+    renderedView_ = view;
+    renderContent(tft, TouchCal::Sample{});
+    motionPhase_ = MotionPhase::FadeIn;
+    motionStarted_ = millis();
+    return;
+  }
+
+  if (motionPhase_ == MotionPhase::FadeIn) {
+    float progress = fminf(1.0f, (now - motionStarted_) / 160.0f);
+    progress = progress * progress * (3.0f - 2.0f * progress);
+    updateBacklight(now, progress);
+    if (progress >= 1.0f) motionPhase_ = MotionPhase::Idle;
+    return;
+  }
+
+  updateBacklight(now, 1.0f);
+  renderContent(tft, touch);
+}
+
+void UIManager::renderContent(TFT_eSPI& tft, const TouchCal::Sample& touch) {
 
   if (menuVisible_) {
     if (screenNeedsRedraw_) {
@@ -316,39 +398,30 @@ void UIManager::handleTouch(TFT_eSPI& tft, const TouchCal::Sample& touch) {
 }
 
 void UIManager::handleClockTouch(const TouchCal::Sample& touch) {
+  if (settings_.getSettings().layoutId == LAYOUT_FOCUS) {
+    if (touch.y >= 210 && touch.y <= 246) {
+      const uint32_t seconds = touch.x < 165 ? 300 : touch.x < 315 ? 1500 : 3000;
+      focus_.start(seconds, millis()); screenNeedsRedraw_ = true; return;
+    }
+    if (touch.y >= 253 && touch.y <= 287 && touch.x >= 80 && touch.x <= 400) {
+      const auto state = focus_.snapshot(millis());
+      if (touch.x >= 307) focus_.reset(millis());
+      else if (state.running) focus_.pause(millis());
+      else if (state.completed) focus_.start(state.durationSeconds, millis());
+      else focus_.resume(millis());
+      screenNeedsRedraw_ = true; return;
+    }
+  }
   showMenu();
 }
 
 void UIManager::handleMenuTouch(const TouchCal::Sample& touch) {
-  // Close [X] button or tap outside menu box
-  if (touch.x < 60 || touch.x > 420 || touch.y < 25 || touch.y > 295 || (touch.x >= 350 && touch.y <= 68)) {
-    hideMenu();
-    return;
-  }
-
-  // COUNTDOWNS button: y: 70..128
-  if (touch.y >= 70 && touch.y <= 128) {
-    showCountdowns();
-    return;
-  }
-
-  // SETTINGS button: y: 129..186
-  if (touch.y >= 129 && touch.y <= 186) {
-    showSettings();
-    return;
-  }
-
-  // SWITCH LAYOUT button: y: 187..242
-  if (touch.y >= 187 && touch.y <= 242) {
-    cycleLayout();
-    hideMenu();
-    return;
-  }
-
-  // CLOSE button: y: 243..295
-  if (touch.y >= 243) {
-    hideMenu();
-    return;
+  if (touch.y < 70 || touch.y > 280) { hideMenu(); return; }
+  if (touch.y <= 176) {
+    if (touch.x < 240) showCountdowns(); else showSettings();
+  } else {
+    if (touch.x < 240) setLayout(LAYOUT_FOCUS); else cycleLayout();
+    backToClock();
   }
 }
 
@@ -371,16 +444,16 @@ void UIManager::handleCountdownsTouch(const TouchCal::Sample& touch) {
   int startIndex = countdownPage_ * 3;
   for (int i = 0; i < 3 && (startIndex + i) < total; i++) {
     int idx = startIndex + i;
-    int y = 60 + i * 80;
+    int y = 60 + i * 70;
 
     // Delete [X] button
-    if (touch.x >= 390 && touch.y >= y && touch.y <= (y + 76)) {
+    if (touch.x >= 390 && touch.y >= y && touch.y <= (y + 66)) {
       deleteCountdown(cds[idx].id);
       return;
     }
 
     // Card click -> edit
-    if (touch.x < 390 && touch.y >= y && touch.y <= (y + 76)) {
+    if (touch.x < 390 && touch.y >= y && touch.y <= (y + 66)) {
       editCountdown(cds[idx].id);
       return;
     }
@@ -567,7 +640,6 @@ void UIManager::handleSettingsTouch(const TouchCal::Sample& touch) {
       uint8_t cur = settings_.getSettings().brightness;
       uint8_t next = cur > 35 ? cur - 35 : 20;
       settings_.setBrightness(next);
-      analogWrite(Pins::kTftBl, next);
       screenNeedsRedraw_ = true;
       return;
     }
@@ -575,7 +647,6 @@ void UIManager::handleSettingsTouch(const TouchCal::Sample& touch) {
       uint8_t cur = settings_.getSettings().brightness;
       uint8_t next = cur < 220 ? cur + 35 : 255;
       settings_.setBrightness(next);
-      analogWrite(Pins::kTftBl, next);
       screenNeedsRedraw_ = true;
       return;
     }
@@ -606,6 +677,15 @@ void UIManager::handleAboutTouch(const TouchCal::Sample& touch) {
 void UIManager::renderClock(TFT_eSPI& tft, const TouchCal::Sample& touch) {
   uint8_t layout = settings_.getSettings().layoutId;
   switch (layout) {
+    case LAYOUT_FLIP:
+      renderFlipLayout(tft);
+      break;
+    case LAYOUT_PIXEL:
+      renderPixelLayout(tft);
+      break;
+    case LAYOUT_SMOOTH:
+      renderSmoothLayout(tft);
+      break;
     case LAYOUT_MINIMAL:
       renderMinimalLayout(tft);
       break;
@@ -622,372 +702,335 @@ void UIManager::renderClock(TFT_eSPI& tft, const TouchCal::Sample& touch) {
   }
 }
 
-void UIManager::renderDigitalLayout(TFT_eSPI& tft) {
-  // Status bar
-  tft.fillRect(16, 8, kWidth - 32, 22, currentTheme_.bg);
+void UIManager::drawClockChrome(TFT_eSPI& tft, const char* label) {
+  tft.fillRect(0, 0, kWidth, 42, currentTheme_.bg);
+  tft.fillRect(0, 291, kWidth, 29, currentTheme_.bg);
+  tft.setTextSize(1);
   tft.setTextFont(2);
   tft.setTextDatum(ML_DATUM);
-  bool connected = wifi_ && wifi_->isConnected();
-  bool apActive = wifi_ && wifi_->isAPActive();
-
-  if (connected) {
-    tft.setTextColor(currentTheme_.accent, currentTheme_.bg);
-    tft.drawString(wifi_->getIP(), 18, 18);
-  } else if (apActive) {
-    tft.setTextColor(currentTheme_.accent, currentTheme_.bg);
-    tft.drawString("AP: CYD-Clock-Setup (192.168.4.1)", 18, 18);
-  } else {
-    tft.setTextColor(currentTheme_.danger, currentTheme_.bg);
-    tft.drawString("WiFi: Offline", 18, 18);
-  }
-
+  tft.setTextColor(currentTheme_.text, currentTheme_.bg);
+  tft.drawString("clocky.", 22, 22);
   tft.setTextDatum(MR_DATUM);
-  tft.setTextColor(clock_.isTimeSynced() ? currentTheme_.textMuted : currentTheme_.danger, currentTheme_.bg);
-  tft.drawString(clock_.isTimeSynced() ? clock_.getTimezone() : "Time: Unsynced", kWidth - 18, 18);
+  tft.setTextColor(currentTheme_.textMuted, currentTheme_.bg);
+  tft.drawString(label, 458, 22);
+  tft.drawFastHLine(22, 42, 436, currentTheme_.border);
+  tft.setTextDatum(ML_DATUM);
+  tft.setTextColor(currentTheme_.textMuted, currentTheme_.bg);
+  tft.drawString("Swipe to explore", 22, 307);
+  tft.setTextDatum(MR_DATUM);
+  tft.drawString("Tap for menu", 458, 307);
+  tft.fillCircle(242, 307, 3, currentTheme_.accent);
+}
 
-  // Clock panel
-  fillRoundedRect(tft, 16, 36, kWidth - 32, 138, 12, currentTheme_.panel);
-
-  // Time display
-  tft.setTextDatum(MC_DATUM);
-  tft.setTextColor(currentTheme_.text, currentTheme_.panel);
-  const Settings& s = settings_.getSettings();
-
-  char timeBuf[16];
-  if (s.use24Hour) {
-    snprintf(timeBuf, sizeof(timeBuf), "%02d:%02d:%02d", clock_.getHour(), clock_.getMinute(), clock_.getSecond());
-    tft.setTextFont(7);
-    tft.drawString(timeBuf, kWidth / 2, 86);
-  } else {
-    int h = clock_.getHour();
-    bool isPm = h >= 12;
-    h = h % 12;
-    if (h == 0) h = 12;
-    snprintf(timeBuf, sizeof(timeBuf), "%2d:%02d:%02d", h, clock_.getMinute(), clock_.getSecond());
-    tft.setTextFont(7);
-    tft.drawString(timeBuf, kWidth / 2 - 25, 86);
-    tft.setTextFont(4);
-    tft.setTextColor(currentTheme_.accent, currentTheme_.panel);
-    tft.drawString(isPm ? "PM" : "AM", kWidth / 2 + 120, 78);
-  }
-
-  // Date display
-  char dateBuf[48];
-  char weekBuf[24];
-  clock_.formatDate(dateBuf, sizeof(dateBuf));
-  clock_.formatWeekday(weekBuf, sizeof(weekBuf));
-  char fullDate[72];
-  snprintf(fullDate, sizeof(fullDate), "%s, %s", weekBuf, dateBuf);
-
-  tft.setTextDatum(MC_DATUM);
-  tft.setTextColor(currentTheme_.textMuted, currentTheme_.panel);
-  tft.setTextFont(4);
-  tft.drawString(fullDate, kWidth / 2, 142);
-
-  // Countdown card
-  fillRoundedRect(tft, 16, 186, kWidth - 32, 118, 12, currentTheme_.panel);
-
+void UIManager::drawNextEvent(TFT_eSPI& tft, int y) {
+  fillRoundedRect(tft, 22, y, 436, 66, 10, currentTheme_.panel);
   const Countdown* cd = settings_.getNextCountdown();
-  if (cd != nullptr) {
-    tft.setTextDatum(MC_DATUM);
-    tft.setTextColor(cd->accentColor != 0 ? rgbTo565(cd->accentColor) : currentTheme_.accent, currentTheme_.panel);
-    tft.setTextFont(4);
-    tft.drawString(cd->name, kWidth / 2, 212);
-
-    char remBuf[64];
-    countdown_.formatRemaining(cd->targetDate, remBuf, sizeof(remBuf), true);
-    tft.setTextColor(currentTheme_.text, currentTheme_.panel);
-    tft.setTextFont(4);
-    tft.drawString(remBuf, kWidth / 2, 250);
-
-    struct tm targetTm;
-    localtime_r(&cd->targetDate, &targetTm);
-    char targetStr[48];
-    snprintf(targetStr, sizeof(targetStr), "Target: %s %d, %d", kMonthNames[targetTm.tm_mon], targetTm.tm_mday, targetTm.tm_year + 1900);
-    tft.setTextColor(currentTheme_.textMuted, currentTheme_.panel);
-    tft.setTextFont(2);
-    tft.drawString(targetStr, kWidth / 2, 282);
+  tft.setTextDatum(ML_DATUM);
+  tft.setTextFont(2);
+  tft.setTextColor(currentTheme_.textMuted, currentTheme_.panel);
+  tft.drawString(cd ? "ON THE HORIZON" : "MAKE ROOM FOR A GOOD THING", 38, y + 15);
+  tft.setTextColor(currentTheme_.text, currentTheme_.panel);
+  if (cd) {
+    String title = cd->name;
+    while (tft.textWidth(title) > 230 && title.length() > 0) title.remove(title.length() - 1);
+    tft.drawString(title, 38, y + 42);
+    char remaining[40];
+    countdown_.formatRemainingShort(cd->targetDate, remaining, sizeof(remaining));
+    tft.setTextDatum(MR_DATUM);
+    tft.setTextColor(currentTheme_.accent, currentTheme_.panel);
+    tft.drawString(remaining, 440, y + 42);
   } else {
-    tft.setTextDatum(MC_DATUM);
-    tft.setTextColor(currentTheme_.textMuted, currentTheme_.panel);
-    tft.setTextFont(4);
-    tft.drawString("No Active Countdowns", kWidth / 2, 232);
-    tft.setTextFont(2);
-    tft.drawString("Tap screen to open menu and add an event", kWidth / 2, 264);
+    tft.drawString("Add a moment worth looking forward to.", 38, y + 42);
   }
+}
+
+void UIManager::renderDigitalLayout(TFT_eSPI& tft) {
+  drawClockChrome(tft, clock_.isTimeSynced() ? "IN GOOD TIME" : "WAITING FOR SYNC");
+  tft.fillRect(0, 44, kWidth, 173, currentTheme_.bg);
+  char weekday[24], date[40], value[16];
+  clock_.formatWeekday(weekday, sizeof(weekday));
+  clock_.formatDate(date, sizeof(date));
+  tft.setTextDatum(MC_DATUM);
+  tft.setTextColor(currentTheme_.accent, currentTheme_.bg);
+  tft.setTextFont(2);
+  tft.drawString(weekday, 240, 66);
+  int hour = clock_.getHour();
+  if (!settings_.getSettings().use24Hour) hour = hour % 12 == 0 ? 12 : hour % 12;
+  snprintf(value, sizeof(value), "%02d:%02d", hour, clock_.getMinute());
+  tft.setTextFont(4);
+  tft.setTextSize(3);
+  tft.setTextColor(currentTheme_.text, currentTheme_.bg);
+  tft.drawString(value, 222, 124);
+  tft.setTextSize(1);
+  tft.setTextFont(2);
+  tft.setTextDatum(ML_DATUM);
+  tft.setTextColor(currentTheme_.accent, currentTheme_.bg);
+  snprintf(value, sizeof(value), "%02d", clock_.getSecond());
+  tft.drawString(value, 366, 122);
+  if (!settings_.getSettings().use24Hour) tft.drawString(clock_.getHour() < 12 ? "AM" : "PM", 366, 143);
+  tft.setTextDatum(MC_DATUM);
+  tft.setTextColor(currentTheme_.textMuted, currentTheme_.bg);
+  tft.drawString(date, 240, 184);
+  const int progress = (clock_.getHour() * 3600 + clock_.getMinute() * 60 + clock_.getSecond()) * 436 / 86400;
+  tft.drawFastHLine(22, 205, 436, currentTheme_.border);
+  tft.drawFastHLine(22, 205, progress, currentTheme_.accent);
+  drawNextEvent(tft, 222);
 }
 
 void UIManager::renderMinimalLayout(TFT_eSPI& tft) {
-  fillRoundedRect(tft, 16, 16, kWidth - 32, 160, 12, currentTheme_.panel);
-
-  tft.setTextDatum(MC_DATUM);
-  tft.setTextColor(currentTheme_.text, currentTheme_.panel);
-  tft.setTextFont(7);
-
-  char timeBuf[16];
-  const Settings& s = settings_.getSettings();
-  if (s.use24Hour) {
-    snprintf(timeBuf, sizeof(timeBuf), "%02d:%02d:%02d", clock_.getHour(), clock_.getMinute(), clock_.getSecond());
-    tft.drawString(timeBuf, kWidth / 2, 70);
-  } else {
-    int h = clock_.getHour();
-    bool isPm = h >= 12;
-    h = h % 12;
-    if (h == 0) h = 12;
-    snprintf(timeBuf, sizeof(timeBuf), "%2d:%02d:%02d", h, clock_.getMinute(), clock_.getSecond());
-    tft.drawString(timeBuf, kWidth / 2 - 25, 70);
-    tft.setTextFont(4);
-    tft.setTextColor(currentTheme_.accent, currentTheme_.panel);
-    tft.drawString(isPm ? "PM" : "AM", kWidth / 2 + 120, 62);
-  }
-
-  char dateBuf[48];
-  char weekBuf[24];
-  clock_.formatDate(dateBuf, sizeof(dateBuf));
-  clock_.formatWeekday(weekBuf, sizeof(weekBuf));
-  char fullDate[72];
-  snprintf(fullDate, sizeof(fullDate), "%s  ·  %s", weekBuf, dateBuf);
-
-  tft.setTextDatum(MC_DATUM);
-  tft.setTextColor(currentTheme_.textMuted, currentTheme_.panel);
+  drawClockChrome(tft, "LESS, BUT BETTER");
+  tft.fillRect(0, 44, kWidth, 246, currentTheme_.bg);
+  char value[16], date[40];
+  int hour = clock_.getHour();
+  if (!settings_.getSettings().use24Hour) hour = hour % 12 == 0 ? 12 : hour % 12;
+  snprintf(value, sizeof(value), "%02d:%02d", hour, clock_.getMinute());
   tft.setTextFont(4);
-  tft.drawString(fullDate, kWidth / 2, 136);
-
-  // Divider
-  tft.drawFastHLine(30, 188, kWidth - 60, currentTheme_.border);
-
-  // Countdown card
-  fillRoundedRect(tft, 16, 200, kWidth - 32, 104, 12, currentTheme_.panel);
-
-  const Countdown* cd = settings_.getNextCountdown();
-  if (cd != nullptr) {
-    char remShort[32];
-    countdown_.formatRemainingShort(cd->targetDate, remShort, sizeof(remShort));
-    char line[72];
-    snprintf(line, sizeof(line), "%s  ·  %s", cd->name, remShort);
-
-    tft.setTextDatum(MC_DATUM);
-    tft.setTextColor(currentTheme_.accent, currentTheme_.panel);
-    tft.setTextFont(4);
-    tft.drawString(line, kWidth / 2, 235);
-
-    char remFull[64];
-    countdown_.formatRemaining(cd->targetDate, remFull, sizeof(remFull), true);
-    tft.setTextColor(currentTheme_.text, currentTheme_.panel);
-    tft.setTextFont(2);
-    tft.drawString(remFull, kWidth / 2, 272);
-  } else {
-    tft.setTextDatum(MC_DATUM);
-    tft.setTextColor(currentTheme_.textMuted, currentTheme_.panel);
-    tft.setTextFont(2);
-    tft.drawString("Minimal Layout  ·  Tap to open menu", kWidth / 2, 252);
-  }
+  tft.setTextSize(3);
+  tft.setTextDatum(MC_DATUM);
+  tft.setTextColor(currentTheme_.text, currentTheme_.bg);
+  tft.drawString(value, 240, 134);
+  tft.setTextSize(1);
+  clock_.formatDate(date, sizeof(date));
+  tft.setTextFont(2);
+  tft.setTextColor(currentTheme_.textMuted, currentTheme_.bg);
+  tft.drawString(date, 240, 203);
+  tft.setTextColor(currentTheme_.accent, currentTheme_.bg);
+  tft.drawString("A little more present.", 240, 248);
 }
 
 void UIManager::renderAnalogLayout(TFT_eSPI& tft) {
-  int cx = 135;
-  int cy = 160;
-  int r = 105;
-
-  // Draw analog clock dial
-  tft.fillCircle(cx, cy, r, currentTheme_.panel);
+  drawClockChrome(tft, "AT YOUR OWN PACE");
+  const int cx = 140, cy = 165, r = 105;
+  tft.fillCircle(cx, cy, r + 1, currentTheme_.bg);
   tft.drawCircle(cx, cy, r, currentTheme_.border);
-  tft.drawCircle(cx, cy, r - 1, currentTheme_.border);
-
-  // Hour tick marks
-  for (int i = 0; i < 12; i++) {
-    float angle = i * 30.0f * DEG_TO_RAD;
-    int x1 = cx + (r - 12) * sinf(angle);
-    int y1 = cy - (r - 12) * cosf(angle);
-    int x2 = cx + (r - 4) * sinf(angle);
-    int y2 = cy - (r - 4) * cosf(angle);
-    tft.drawLine(x1, y1, x2, y2, currentTheme_.text);
+  for (int i = 0; i < 60; ++i) {
+    const float angle = i * 6.0f * DEG_TO_RAD;
+    const int inner = i % 5 == 0 ? r - 13 : r - 5;
+    tft.drawLine(cx + inner * sinf(angle), cy - inner * cosf(angle), cx + (r - 2) * sinf(angle), cy - (r - 2) * cosf(angle), i % 5 == 0 ? currentTheme_.textMuted : currentTheme_.border);
   }
-
-  // Hands
-  float hAngle = ((clock_.getHour() % 12) + clock_.getMinute() / 60.0f) * 30.0f * DEG_TO_RAD;
-  int hx = cx + 55 * sinf(hAngle);
-  int hy = cy - 55 * cosf(hAngle);
-  tft.drawLine(cx, cy, hx, hy, currentTheme_.text);
-  tft.drawLine(cx + 1, cy, hx + 1, hy, currentTheme_.text);
-
-  float mAngle = (clock_.getMinute() + clock_.getSecond() / 60.0f) * 6.0f * DEG_TO_RAD;
-  int mx = cx + 75 * sinf(mAngle);
-  int my = cy - 75 * cosf(mAngle);
-  tft.drawLine(cx, cy, mx, my, currentTheme_.text);
-  tft.drawLine(cx, cy + 1, mx, my + 1, currentTheme_.text);
-
-  float sAngle = clock_.getSecond() * 6.0f * DEG_TO_RAD;
-  int sx = cx + 85 * sinf(sAngle);
-  int sy = cy - 85 * cosf(sAngle);
-  tft.drawLine(cx, cy, sx, sy, currentTheme_.accent);
-  tft.fillCircle(cx, cy, 4, currentTheme_.accent);
-
-  // Right side panel
-  int px = 260;
-  int pw = kWidth - px - 16;
-  fillRoundedRect(tft, px, 16, pw, 288, 12, currentTheme_.panel);
-
-  // Digital time
-  char timeBuf[16];
-  clock_.formatTime(timeBuf, sizeof(timeBuf));
-  tft.setTextDatum(MC_DATUM);
-  tft.setTextColor(currentTheme_.text, currentTheme_.panel);
-  tft.setTextFont(4);
-  tft.drawString(timeBuf, px + pw / 2, 50);
-
-  // Date
-  char dateBuf[48];
-  char weekBuf[24];
-  clock_.formatDate(dateBuf, sizeof(dateBuf));
-  clock_.formatWeekday(weekBuf, sizeof(weekBuf));
-  tft.setTextColor(currentTheme_.textMuted, currentTheme_.panel);
-  tft.setTextFont(2);
-  tft.drawString(weekBuf, px + pw / 2, 85);
-  tft.drawString(dateBuf, px + pw / 2, 105);
-
-  tft.drawFastHLine(px + 12, 130, pw - 24, currentTheme_.border);
-
-  // Countdown
-  const Countdown* cd = settings_.getNextCountdown();
-  if (cd != nullptr) {
-    tft.setTextColor(currentTheme_.accent, currentTheme_.panel);
-    tft.setTextFont(4);
-    tft.drawString(cd->name, px + pw / 2, 160);
-
-    char remBuf[64];
-    countdown_.formatRemaining(cd->targetDate, remBuf, sizeof(remBuf), true);
-    tft.setTextColor(currentTheme_.text, currentTheme_.panel);
-    tft.setTextFont(2);
-    tft.drawString(remBuf, px + pw / 2, 200);
-
-    struct tm targetTm;
-    localtime_r(&cd->targetDate, &targetTm);
-    char targetStr[32];
-    snprintf(targetStr, sizeof(targetStr), "%s %d, %d", kMonthNames[targetTm.tm_mon], targetTm.tm_mday, targetTm.tm_year + 1900);
-    tft.setTextColor(currentTheme_.textMuted, currentTheme_.panel);
-    tft.drawString(targetStr, px + pw / 2, 240);
-  } else {
-    tft.setTextColor(currentTheme_.textMuted, currentTheme_.panel);
-    tft.setTextFont(2);
-    tft.drawString("No Countdowns", px + pw / 2, 180);
-    tft.drawString("Tap to configure", px + pw / 2, 210);
-  }
+  const float hour = ((clock_.getHour() % 12) + clock_.getMinute() / 60.0f) * 30 * DEG_TO_RAD;
+  const float minute = (clock_.getMinute() + clock_.getSecond() / 60.0f) * 6 * DEG_TO_RAD;
+  const float second = clock_.getSecond() * 6 * DEG_TO_RAD;
+  tft.drawWideLine(cx, cy, cx + 52 * sinf(hour), cy - 52 * cosf(hour), 4, currentTheme_.text, currentTheme_.bg);
+  tft.drawWideLine(cx, cy, cx + 78 * sinf(minute), cy - 78 * cosf(minute), 3, currentTheme_.text, currentTheme_.bg);
+  tft.drawLine(cx, cy, cx + 88 * sinf(second), cy - 88 * cosf(second), currentTheme_.accent);
+  tft.fillCircle(cx, cy, 5, currentTheme_.accent);
+  tft.fillRect(266, 52, 200, 228, currentTheme_.bg);
+  char time[24], date[32], day[24];
+  clock_.formatTime(time, sizeof(time)); clock_.formatDate(date, sizeof(date)); clock_.formatWeekday(day, sizeof(day));
+  tft.setTextDatum(ML_DATUM); tft.setTextFont(2);
+  tft.setTextColor(currentTheme_.accent, currentTheme_.bg); tft.drawString(day, 272, 96);
+  tft.setTextColor(currentTheme_.text, currentTheme_.bg); tft.drawString(time, 272, 130);
+  tft.setTextColor(currentTheme_.textMuted, currentTheme_.bg); tft.drawString(date, 272, 162);
+  tft.drawFastHLine(272, 191, 175, currentTheme_.border);
+  tft.drawString("Time, beautifully simple.", 272, 222);
 }
 
 void UIManager::renderFocusLayout(TFT_eSPI& tft) {
-  // Top mini bar
-  char timeBuf[16];
-  clock_.formatTime(timeBuf, sizeof(timeBuf));
-  char dateBuf[48];
-  char weekBuf[24];
-  clock_.formatDate(dateBuf, sizeof(dateBuf));
-  clock_.formatWeekday(weekBuf, sizeof(weekBuf));
+  const auto state = focus_.snapshot(millis());
+  drawClockChrome(tft, state.completed ? "NICELY DONE" : state.running ? "IN THE ZONE" : "ONE THING AT A TIME");
+  tft.fillRect(0, 44, kWidth, 246, currentTheme_.bg);
+  char time[16];
+  snprintf(time, sizeof(time), "%02u:%02u", state.remainingSeconds / 60, state.remainingSeconds % 60);
+  tft.setTextDatum(MC_DATUM); tft.setTextFont(4); tft.setTextSize(3);
+  tft.setTextColor(currentTheme_.text, currentTheme_.bg); tft.drawString(time, 240, 105);
+  tft.setTextSize(1); tft.setTextFont(2);
+  tft.setTextColor(currentTheme_.textMuted, currentTheme_.bg);
+  tft.drawString(state.completed ? "Take a breath. You earned it." : "Make space for your next good idea.", 240, 161);
+  tft.fillRoundRect(80, 185, 320, 4, 2, currentTheme_.panelAlt);
+  const int progress = 320 * (state.durationSeconds - state.remainingSeconds) / state.durationSeconds;
+  if (progress > 0) tft.fillRoundRect(80, 185, progress, 4, 2, currentTheme_.accent);
+  drawButton(tft, 22, 210, 134, 36, "5 min break", currentTheme_.panel, currentTheme_.textMuted);
+  drawButton(tft, 173, 210, 134, 36, "25 min focus", currentTheme_.panel, currentTheme_.textMuted);
+  drawButton(tft, 324, 210, 134, 36, "50 min deep", currentTheme_.panel, currentTheme_.textMuted);
+  drawButton(tft, 80, 253, 210, 34, state.running ? "Pause session" : state.completed ? "Start again" : "Start / resume", currentTheme_.accent, currentTheme_.textOnAccent);
+  drawButton(tft, 307, 253, 93, 34, "Reset", currentTheme_.panelAlt, currentTheme_.textMuted);
+}
 
-  char topStr[96];
-  snprintf(topStr, sizeof(topStr), "%s  ·  %s, %s", timeBuf, weekBuf, dateBuf);
+void UIManager::renderFlipLayout(TFT_eSPI& tft) {
+  char hourText[4], minuteText[4], dateText[40];
+  int hour = clock_.getHour();
+  const bool pm = hour >= 12;
+  if (!settings_.getSettings().use24Hour) hour = hour % 12 == 0 ? 12 : hour % 12;
+  snprintf(hourText, sizeof(hourText), "%02d", hour);
+  snprintf(minuteText, sizeof(minuteText), "%02d", clock_.getMinute());
+  clock_.formatDate(dateText, sizeof(dateText));
 
+  tft.setTextSize(1);
+  tft.setTextFont(2);
+  tft.setTextDatum(ML_DATUM);
+  tft.setTextColor(currentTheme_.text, currentTheme_.bg);
+  tft.drawString("clocky.", 22, 22);
+  tft.setTextDatum(MR_DATUM);
+  tft.setTextColor(currentTheme_.textMuted, currentTheme_.bg);
+  tft.drawString("MECHANICAL FLIP", 458, 22);
+
+  const int cardY = 54, cardW = 198, cardH = 194;
+  fillRoundedRect(tft, 28, cardY, cardW, cardH, 12, currentTheme_.panel);
+  fillRoundedRect(tft, 254, cardY, cardW, cardH, 12, currentTheme_.panel);
+  tft.setTextDatum(MC_DATUM);
+  tft.setTextFont(7);
+  tft.setTextColor(currentTheme_.text, currentTheme_.panel);
+  tft.setTextPadding(176);
+  tft.drawString(hourText, 127, 147);
+  tft.drawString(minuteText, 353, 147);
+  tft.setTextPadding(0);
+  tft.drawFastHLine(34, cardY + cardH / 2, cardW - 12, currentTheme_.border);
+  tft.drawFastHLine(260, cardY + cardH / 2, cardW - 12, currentTheme_.border);
+  tft.fillCircle(35, cardY + cardH / 2, 3, currentTheme_.panelAlt);
+  tft.fillCircle(219, cardY + cardH / 2, 3, currentTheme_.panelAlt);
+  tft.fillCircle(261, cardY + cardH / 2, 3, currentTheme_.panelAlt);
+  tft.fillCircle(445, cardY + cardH / 2, 3, currentTheme_.panelAlt);
+
+  tft.setTextFont(2);
+  tft.setTextDatum(ML_DATUM);
+  tft.setTextColor(currentTheme_.textMuted, currentTheme_.bg);
+  tft.setTextPadding(280);
+  tft.drawString(dateText, 28, 274);
+  tft.setTextPadding(0);
+  tft.setTextDatum(MR_DATUM);
+  tft.setTextColor(currentTheme_.accent, currentTheme_.bg);
+  char detail[16];
+  if (settings_.getSettings().use24Hour) {
+    snprintf(detail, sizeof(detail), "%02d sec", clock_.getSecond());
+  } else {
+    snprintf(detail, sizeof(detail), "%s  %02d sec", pm ? "PM" : "AM", clock_.getSecond());
+  }
+  tft.drawString(detail, 452, 274);
   tft.setTextDatum(MC_DATUM);
   tft.setTextColor(currentTheme_.textMuted, currentTheme_.bg);
-  tft.setTextFont(2);
-  tft.drawString(topStr, kWidth / 2, 18);
+  tft.drawString("Swipe for another face  /  Tap for menu", 240, 307);
+}
 
-  // Giant Countdown Card
-  fillRoundedRect(tft, 16, 36, kWidth - 32, 268, 12, currentTheme_.panel);
+void UIManager::renderPixelLayout(TFT_eSPI& tft) {
+  char timeText[8], seconds[4], dateText[40];
+  int hour = clock_.getHour();
+  if (!settings_.getSettings().use24Hour) hour = hour % 12 == 0 ? 12 : hour % 12;
+  snprintf(timeText, sizeof(timeText), "%02d:%02d", hour, clock_.getMinute());
+  snprintf(seconds, sizeof(seconds), "%02d", clock_.getSecond());
+  clock_.formatDate(dateText, sizeof(dateText));
 
-  const Countdown* cd = settings_.getNextCountdown();
-  if (cd != nullptr) {
-    CountdownManager::RemainingTime rem = countdown_.getRemaining(cd->targetDate);
+  tft.setTextSize(1); tft.setTextFont(2); tft.setTextDatum(ML_DATUM);
+  tft.setTextColor(currentTheme_.accent, currentTheme_.bg);
+  tft.drawString("CLOCKY // PIXEL", 22, 22);
+  tft.setTextDatum(MR_DATUM); tft.setTextColor(currentTheme_.textMuted, currentTheme_.bg);
+  tft.drawString(clock_.isTimeSynced() ? "ONLINE" : "SYNCING", 458, 22);
 
-    tft.setTextDatum(MC_DATUM);
-    tft.setTextColor(currentTheme_.accent, currentTheme_.panel);
-    tft.setTextFont(4);
-    tft.drawString(cd->name, kWidth / 2, 70);
+  // Four corner pixels frame the face without taking space from the clock.
+  const int corners[][2] = {{22, 55}, {450, 55}, {22, 258}, {450, 258}};
+  for (const auto& point : corners) tft.fillRect(point[0], point[1], 8, 8, currentTheme_.accent);
+  tft.setTextFont(1); tft.setTextSize(10); tft.setTextDatum(MC_DATUM);
+  tft.setTextColor(currentTheme_.text, currentTheme_.bg);
+  tft.setTextPadding(390);
+  tft.drawString(timeText, 240, 142);
+  tft.setTextPadding(0); tft.setTextSize(1); tft.setTextFont(4);
+  tft.setTextColor(currentTheme_.accent, currentTheme_.bg);
+  tft.setTextPadding(50); tft.drawString(seconds, 410, 203); tft.setTextPadding(0);
+  tft.setTextFont(2); tft.setTextColor(currentTheme_.textMuted, currentTheme_.bg);
+  tft.setTextPadding(320); tft.drawString(dateText, 240, 241); tft.setTextPadding(0);
+  tft.drawFastHLine(80, 274, 320, currentTheme_.border);
+  tft.setTextFont(1); tft.setTextColor(currentTheme_.accent, currentTheme_.bg);
+  tft.drawString("SWIPE:CHANGE   TAP:MENU", 240, 299);
+}
 
-    char daysStr[16];
-    snprintf(daysStr, sizeof(daysStr), "%d", rem.days);
-    tft.setTextColor(currentTheme_.text, currentTheme_.panel);
-    tft.setTextFont(7);
-    tft.drawString(daysStr, kWidth / 2, 130);
+void UIManager::renderSmoothLayout(TFT_eSPI& tft) {
+  char timeText[8], seconds[4], weekday[24], dateText[40];
+  int hour = clock_.getHour();
+  const bool pm = hour >= 12;
+  if (!settings_.getSettings().use24Hour) hour = hour % 12 == 0 ? 12 : hour % 12;
+  snprintf(timeText, sizeof(timeText), "%02d:%02d", hour, clock_.getMinute());
+  snprintf(seconds, sizeof(seconds), "%02d", clock_.getSecond());
+  clock_.formatWeekday(weekday, sizeof(weekday));
+  clock_.formatDate(dateText, sizeof(dateText));
 
-    tft.setTextFont(4);
-    tft.setTextColor(currentTheme_.textMuted, currentTheme_.panel);
-    tft.drawString("DAYS REMAINING", kWidth / 2, 185);
-
-    char subStr[48];
-    snprintf(subStr, sizeof(subStr), "%02d HOURS  ·  %02d MIN  ·  %02d SEC", rem.hours, rem.minutes, rem.seconds);
-    tft.setTextColor(currentTheme_.text, currentTheme_.panel);
-    tft.setTextFont(4);
-    tft.drawString(subStr, kWidth / 2, 230);
-
-    struct tm targetTm;
-    localtime_r(&cd->targetDate, &targetTm);
-    char targetStr[48];
-    snprintf(targetStr, sizeof(targetStr), "Target Date: %s %d, %d", kMonthNames[targetTm.tm_mon], targetTm.tm_mday, targetTm.tm_year + 1900);
-    tft.setTextColor(currentTheme_.textMuted, currentTheme_.panel);
-    tft.setTextFont(2);
-    tft.drawString(targetStr, kWidth / 2, 275);
-  } else {
-    tft.setTextDatum(MC_DATUM);
-    tft.setTextColor(currentTheme_.textMuted, currentTheme_.panel);
-    tft.setTextFont(4);
-    tft.drawString("Focus Mode", kWidth / 2, 140);
-    tft.setTextFont(2);
-    tft.drawString("No upcoming countdown active. Tap to add one.", kWidth / 2, 180);
+  tft.setTextSize(1); tft.setTextFont(2); tft.setTextDatum(MC_DATUM);
+  tft.setTextColor(currentTheme_.accent, currentTheme_.bg);
+  tft.setTextPadding(250); tft.drawString(weekday, 240, 50); tft.setTextPadding(0);
+  tft.setTextFont(7); tft.setTextColor(currentTheme_.text, currentTheme_.bg);
+  tft.setTextPadding(350); tft.drawString(timeText, 224, 133); tft.setTextPadding(0);
+  tft.setTextFont(4); tft.setTextColor(currentTheme_.accent, currentTheme_.bg);
+  tft.setTextPadding(48); tft.drawString(seconds, 422, 135); tft.setTextPadding(0);
+  if (!settings_.getSettings().use24Hour) {
+    tft.setTextFont(2); tft.drawString(pm ? "PM" : "AM", 422, 163);
   }
+  tft.setTextFont(2); tft.setTextColor(currentTheme_.textMuted, currentTheme_.bg);
+  tft.setTextPadding(340); tft.drawString(dateText, 240, 211); tft.setTextPadding(0);
+  const int dayProgress = (clock_.getHour() * 3600 + clock_.getMinute() * 60 + clock_.getSecond()) * 400 / 86400;
+  tft.fillRoundRect(40, 246, 400, 3, 1, currentTheme_.panelAlt);
+  if (dayProgress > 0) tft.fillRoundRect(40, 246, dayProgress, 3, 1, currentTheme_.accent);
+  tft.setTextColor(currentTheme_.textMuted, currentTheme_.bg);
+  tft.drawString("Today, at your pace", 240, 275);
+  tft.drawString("Swipe for another face  /  Tap for menu", 240, 307);
 }
 
 void UIManager::renderMenu(TFT_eSPI& tft) {
-  int mx = 60;
-  int my = 25;
-  int mw = 360;
-  int mh = 270;
+  tft.fillScreen(currentTheme_.bg);
+  tft.setTextSize(1);
+  tft.setTextFont(4); tft.setTextDatum(ML_DATUM);
+  tft.setTextColor(currentTheme_.text, currentTheme_.bg); tft.drawString("Make yourself at home.", 24, 36);
+  drawButton(tft, 410, 16, 46, 40, "X", currentTheme_.panel, currentTheme_.textMuted);
+  const char* titles[] = {"Your moments", "Make it yours", "Find your focus", "A fresh view"};
+  const char* subtitles[] = {"Countdowns & milestones", "Display & device settings", "Start a focus session", "Switch clock layout"};
+  for (int i = 0; i < 4; ++i) {
+    const int x = 24 + (i % 2) * 224, y = 78 + (i / 2) * 108;
+    tft.fillRoundRect(x, y, 208, 94, 12, currentTheme_.panel);
+    tft.fillRoundRect(x + 16, y + 17, 22, 3, 1, currentTheme_.accent);
+    tft.setTextDatum(ML_DATUM); tft.setTextFont(4); tft.setTextColor(currentTheme_.text, currentTheme_.panel);
+    tft.drawString(titles[i], x + 16, y + 44);
+    tft.setTextFont(2); tft.setTextColor(currentTheme_.textMuted, currentTheme_.panel);
+    tft.drawString(subtitles[i], x + 16, y + 72);
+  }
+}
 
-  fillRoundedRect(tft, mx, my, mw, mh, 12, currentTheme_.panel);
-  drawRoundedRect(tft, mx, my, mw, mh, 12, currentTheme_.border);
-
-  // Header
+void UIManager::drawPageHeader(TFT_eSPI& tft, const char* eyebrow, const char* title,
+                               const char* action) {
+  tft.setTextSize(1);
+  tft.fillRect(0, 0, kWidth, 55, currentTheme_.bg);
+  drawButton(tft, 16, 11, 58, 34, "<", currentTheme_.panel, currentTheme_.textMuted);
   tft.setTextDatum(ML_DATUM);
-  tft.setTextColor(currentTheme_.text, currentTheme_.panel);
+  tft.setTextFont(2);
+  tft.setTextColor(currentTheme_.accent, currentTheme_.bg);
+  tft.drawString(eyebrow, 88, 15);
   tft.setTextFont(4);
-  tft.drawString("MENU", mx + 20, my + 24);
+  tft.setTextColor(currentTheme_.text, currentTheme_.bg);
+  tft.drawString(title, 88, 36);
+  if (action != nullptr) {
+    drawButton(tft, 374, 11, 90, 34, action, currentTheme_.accent,
+               currentTheme_.textOnAccent);
+  }
+}
 
-  // Close X button
-  drawButton(tft, mx + mw - 50, my + 10, 40, 36, "X", currentTheme_.panelAlt, currentTheme_.text);
-
-  // Buttons
-  drawButton(tft, 80, 78, 320, 48, "COUNTDOWNS", currentTheme_.panelAlt, currentTheme_.text);
-  drawButton(tft, 80, 136, 320, 48, "SETTINGS", currentTheme_.panelAlt, currentTheme_.text);
-  
-  char layoutLabel[48];
-  snprintf(layoutLabel, sizeof(layoutLabel), "LAYOUT: %s", kLayoutNames[settings_.getSettings().layoutId % LAYOUT_COUNT]);
-  drawButton(tft, 80, 194, 320, 48, layoutLabel, currentTheme_.accent, currentTheme_.textOnAccent);
-
-  drawButton(tft, 80, 248, 320, 36, "CLOSE", currentTheme_.panelAlt, currentTheme_.textMuted);
+void UIManager::drawSettingValue(TFT_eSPI& tft, int y, const char* label,
+                                 const char* value) {
+  tft.setTextDatum(ML_DATUM);
+  tft.setTextFont(2);
+  tft.setTextColor(currentTheme_.textMuted, currentTheme_.panel);
+  tft.drawString(label, 34, y + 20);
+  tft.setTextDatum(MR_DATUM);
+  tft.setTextColor(currentTheme_.text, currentTheme_.panel);
+  tft.drawString(value, 434, y + 20);
+  tft.drawFastHLine(34, y + 39, 400, currentTheme_.border);
 }
 
 void UIManager::renderCountdowns(TFT_eSPI& tft, const TouchCal::Sample& touch) {
-  // Top bar
-  drawButton(tft, 16, 12, 90, 36, "< Back", currentTheme_.panel, currentTheme_.text);
-
-  tft.setTextDatum(MC_DATUM);
-  tft.setTextColor(currentTheme_.text, currentTheme_.bg);
-  tft.setTextFont(4);
-  tft.drawString("COUNTDOWNS", kWidth / 2, 30);
-
-  drawButton(tft, 374, 12, 90, 36, "+ Add", currentTheme_.accent, currentTheme_.textOnAccent);
+  drawPageHeader(tft, "GOOD THINGS TAKE TIME", "Your moments", "+ Add");
 
   int total = settings_.getCountdownCount();
   const Countdown* cds = settings_.getCountdowns();
 
   if (total == 0) {
-    fillRoundedRect(tft, 16, 60, kWidth - 32, 230, 12, currentTheme_.panel);
+    fillRoundedRect(tft, 16, 64, kWidth - 32, 218, 12, currentTheme_.panel);
+    tft.fillCircle(kWidth / 2, 123, 22, currentTheme_.panelAlt);
+    tft.drawCircle(kWidth / 2, 123, 10, currentTheme_.accent);
     tft.setTextDatum(MC_DATUM);
-    tft.setTextColor(currentTheme_.textMuted, currentTheme_.panel);
+    tft.setTextColor(currentTheme_.text, currentTheme_.panel);
     tft.setTextFont(4);
-    tft.drawString("No Countdowns Saved", kWidth / 2, 150);
+    tft.drawString("Make room for a good thing.", kWidth / 2, 174);
     tft.setTextFont(2);
-    tft.drawString("Tap '+ Add' to create a countdown.", kWidth / 2, 190);
+    tft.setTextColor(currentTheme_.textMuted, currentTheme_.panel);
+    tft.drawString("Add a milestone or a moment worth counting down to.", kWidth / 2, 207);
+    tft.setTextColor(currentTheme_.accent, currentTheme_.panel);
+    tft.drawString("TAP + ADD TO BEGIN", kWidth / 2, 246);
     return;
   }
 
@@ -995,28 +1038,29 @@ void UIManager::renderCountdowns(TFT_eSPI& tft, const TouchCal::Sample& touch) {
   for (int i = 0; i < 3 && (startIndex + i) < total; i++) {
     int idx = startIndex + i;
     const Countdown& cd = cds[idx];
-    int y = 60 + i * 80;
+    int y = 60 + i * 70;
 
-    fillRoundedRect(tft, 16, y, kWidth - 32, 72, 8, currentTheme_.panel);
-    drawRoundedRect(tft, 16, y, kWidth - 32, 72, 8, currentTheme_.border);
+    fillRoundedRect(tft, 16, y, kWidth - 32, 64, 10, currentTheme_.panel);
 
     // Accent pill
     uint16_t color = cd.accentColor != 0 ? rgbTo565(cd.accentColor) : currentTheme_.accent;
-    tft.fillRect(20, y + 8, 4, 56, color);
+    tft.fillRoundRect(28, y + 13, 4, 38, 2, color);
 
     tft.setTextDatum(ML_DATUM);
     tft.setTextColor(currentTheme_.text, currentTheme_.panel);
     tft.setTextFont(4);
-    tft.drawString(cd.name, 34, y + 24);
+    String title = cd.name;
+    while (tft.textWidth(title) > 300 && title.length()) title.remove(title.length() - 1);
+    tft.drawString(title, 46, y + 23);
 
     char remStr[64];
     countdown_.formatRemaining(cd.targetDate, remStr, sizeof(remStr), false);
     tft.setTextColor(currentTheme_.textMuted, currentTheme_.panel);
     tft.setTextFont(2);
-    tft.drawString(remStr, 34, y + 52);
+    tft.drawString(remStr, 46, y + 45);
 
     // Delete [X] button
-    drawButton(tft, 410, y + 14, 44, 44, "X", currentTheme_.danger, currentTheme_.text);
+    drawButton(tft, 410, y + 12, 36, 40, "x", currentTheme_.panelAlt, currentTheme_.textMuted);
   }
 
   if (total > 3) {
@@ -1038,225 +1082,141 @@ void UIManager::renderCountdowns(TFT_eSPI& tft, const TouchCal::Sample& touch) {
 }
 
 void UIManager::renderCountdownEdit(TFT_eSPI& tft, const TouchCal::Sample& touch) {
-  // Top bar
-  drawButton(tft, 16, 12, 90, 36, "< Cancel", currentTheme_.panel, currentTheme_.text);
+  drawPageHeader(tft, "MAKE IT A MOMENT",
+                 strlen(editingCountdownId_) > 0 ? "Edit your moment" : "New countdown",
+                 "Save");
+  fillRoundedRect(tft, 16, 58, kWidth - 32, 244, 12, currentTheme_.panel);
 
-  tft.setTextDatum(MC_DATUM);
-  tft.setTextColor(currentTheme_.text, currentTheme_.bg);
-  tft.setTextFont(4);
-  tft.drawString(strlen(editingCountdownId_) > 0 ? "EDIT COUNTDOWN" : "NEW COUNTDOWN", kWidth / 2, 30);
-
-  drawButton(tft, 374, 12, 90, 36, "Save", currentTheme_.accent, currentTheme_.textOnAccent);
-
-  fillRoundedRect(tft, 16, 56, kWidth - 32, 252, 12, currentTheme_.panel);
-
-  // Row 1: Event Name
   tft.setTextDatum(ML_DATUM);
-  tft.setTextColor(currentTheme_.text, currentTheme_.panel);
-  tft.setTextFont(4);
-  tft.drawString("Event:", 28, 82);
-
-  drawButton(tft, 110, 64, 36, 36, "<", currentTheme_.panelAlt, currentTheme_.text);
-  tft.setTextDatum(MC_DATUM);
-  tft.setTextColor(currentTheme_.accent, currentTheme_.panel);
-  tft.setTextFont(4);
-  tft.drawString(editName_, 245, 82);
-  drawButton(tft, 380, 64, 36, 36, ">", currentTheme_.panelAlt, currentTheme_.text);
-
-  // Row 2: Date
-  tft.setTextDatum(ML_DATUM);
-  tft.setTextColor(currentTheme_.text, currentTheme_.panel);
-  tft.setTextFont(4);
-  tft.drawString("Date:", 28, 127);
-
-  drawButton(tft, 100, 110, 32, 34, "-", currentTheme_.panelAlt, currentTheme_.text);
-  char yStr[8]; snprintf(yStr, sizeof(yStr), "%d", editYear_);
-  tft.setTextDatum(MC_DATUM);
-  tft.setTextColor(currentTheme_.text, currentTheme_.panel);
   tft.setTextFont(2);
-  tft.drawString(yStr, 155, 127);
-  drawButton(tft, 190, 110, 32, 34, "+", currentTheme_.panelAlt, currentTheme_.text);
-
-  drawButton(tft, 230, 110, 32, 34, "-", currentTheme_.panelAlt, currentTheme_.text);
-  tft.drawString(kMonthNames[(editMonth_ - 1 + 12) % 12], 285, 127);
-  drawButton(tft, 310, 110, 32, 34, "+", currentTheme_.panelAlt, currentTheme_.text);
-
-  drawButton(tft, 350, 110, 32, 34, "-", currentTheme_.panelAlt, currentTheme_.text);
-  char dStr[8]; snprintf(dStr, sizeof(dStr), "%02d", editDay_);
-  tft.drawString(dStr, 395, 127);
-  drawButton(tft, 420, 110, 32, 34, "+", currentTheme_.panelAlt, currentTheme_.text);
-
-  // Row 3: Time
-  tft.setTextDatum(ML_DATUM);
-  tft.setTextColor(currentTheme_.text, currentTheme_.panel);
-  tft.setTextFont(4);
-  tft.drawString("Time:", 28, 173);
-
-  drawButton(tft, 100, 156, 32, 34, "-", currentTheme_.panelAlt, currentTheme_.text);
-  char hStr[8]; snprintf(hStr, sizeof(hStr), "%02d", editHour_);
+  tft.setTextColor(currentTheme_.textMuted, currentTheme_.panel);
+  tft.drawString("EVENT NAME", 30, 72);
+  drawButton(tft, 30, 85, 42, 34, "<", currentTheme_.panelAlt, currentTheme_.textMuted);
+  drawButton(tft, 408, 85, 42, 34, ">", currentTheme_.panelAlt, currentTheme_.textMuted);
   tft.setTextDatum(MC_DATUM);
+  tft.setTextFont(4);
   tft.setTextColor(currentTheme_.text, currentTheme_.panel);
-  tft.setTextFont(2);
-  tft.drawString(hStr, 145, 173);
-  drawButton(tft, 170, 156, 32, 34, "+", currentTheme_.panelAlt, currentTheme_.text);
+  String eventName = editName_;
+  while (tft.textWidth(eventName) > 300 && eventName.length()) eventName.remove(eventName.length() - 1);
+  tft.drawString(eventName, 240, 102);
 
-  drawButton(tft, 210, 156, 32, 34, "-", currentTheme_.panelAlt, currentTheme_.text);
-  char mStr[8]; snprintf(mStr, sizeof(mStr), "%02d", editMinute_);
-  tft.drawString(mStr, 255, 173);
-  drawButton(tft, 280, 156, 32, 34, "+", currentTheme_.panelAlt, currentTheme_.text);
+  tft.drawFastHLine(30, 126, 420, currentTheme_.border);
+  tft.setTextDatum(ML_DATUM); tft.setTextFont(2);
+  tft.setTextColor(currentTheme_.textMuted, currentTheme_.panel);
+  tft.drawString("DATE", 30, 145);
+  drawButton(tft, 100, 130, 32, 30, "-", currentTheme_.panelAlt, currentTheme_.textMuted);
+  char year[8]; snprintf(year, sizeof(year), "%d", editYear_);
+  tft.setTextDatum(MC_DATUM); tft.setTextColor(currentTheme_.text, currentTheme_.panel);
+  tft.drawString(year, 160, 145);
+  drawButton(tft, 190, 130, 32, 30, "+", currentTheme_.panelAlt, currentTheme_.textMuted);
+  drawButton(tft, 230, 130, 32, 30, "-", currentTheme_.panelAlt, currentTheme_.textMuted);
+  tft.drawString(kMonthNames[(editMonth_ - 1 + 12) % 12], 285, 145);
+  drawButton(tft, 310, 130, 32, 30, "+", currentTheme_.panelAlt, currentTheme_.textMuted);
+  drawButton(tft, 350, 130, 32, 30, "-", currentTheme_.panelAlt, currentTheme_.textMuted);
+  char day[4]; snprintf(day, sizeof(day), "%02d", editDay_);
+  tft.drawString(day, 400, 145);
+  drawButton(tft, 420, 130, 32, 30, "+", currentTheme_.panelAlt, currentTheme_.textMuted);
 
-  drawButton(tft, 320, 156, 130, 34, editHasTime_ ? "Time: YES" : "Time: NO", 
-             editHasTime_ ? currentTheme_.accent : currentTheme_.panelAlt, 
+  tft.drawFastHLine(30, 166, 420, currentTheme_.border);
+  tft.setTextDatum(ML_DATUM);
+  tft.setTextColor(currentTheme_.textMuted, currentTheme_.panel);
+  tft.drawString("TIME", 30, 184);
+  drawButton(tft, 100, 169, 32, 30, "-", currentTheme_.panelAlt, currentTheme_.textMuted);
+  char hour[4]; snprintf(hour, sizeof(hour), "%02d", editHour_);
+  tft.setTextDatum(MC_DATUM); tft.setTextColor(currentTheme_.text, currentTheme_.panel);
+  tft.drawString(hour, 145, 184);
+  drawButton(tft, 170, 169, 32, 30, "+", currentTheme_.panelAlt, currentTheme_.textMuted);
+  drawButton(tft, 210, 169, 32, 30, "-", currentTheme_.panelAlt, currentTheme_.textMuted);
+  char minute[4]; snprintf(minute, sizeof(minute), "%02d", editMinute_);
+  tft.drawString(minute, 255, 184);
+  drawButton(tft, 280, 169, 32, 30, "+", currentTheme_.panelAlt, currentTheme_.textMuted);
+  drawButton(tft, 320, 169, 122, 30, editHasTime_ ? "Time on" : "No time",
+             editHasTime_ ? currentTheme_.accent : currentTheme_.panelAlt,
              editHasTime_ ? currentTheme_.textOnAccent : currentTheme_.textMuted);
 
-  // Row 4: Main Screen Toggle
+  tft.drawFastHLine(30, 207, 420, currentTheme_.border);
   tft.setTextDatum(ML_DATUM);
-  tft.setTextColor(currentTheme_.text, currentTheme_.panel);
-  tft.setTextFont(4);
-  tft.drawString("Show on Main:", 28, 221);
-  drawButton(tft, 250, 204, 140, 34, editShowOnMain_ ? "YES" : "NO",
+  tft.setTextColor(currentTheme_.textMuted, currentTheme_.panel);
+  tft.drawString("FEATURE ON CLOCK DISPLAY", 30, 227);
+  drawButton(tft, 360, 211, 82, 31, editShowOnMain_ ? "Yes" : "No",
              editShowOnMain_ ? currentTheme_.accent : currentTheme_.panelAlt,
              editShowOnMain_ ? currentTheme_.textOnAccent : currentTheme_.textMuted);
 
-  // Delete button if editing existing
   if (strlen(editingCountdownId_) > 0) {
-    drawButton(tft, 140, 252, 200, 40, "DELETE COUNTDOWN", currentTheme_.danger, currentTheme_.text);
+    drawButton(tft, 140, 263, 200, 29, "Remove countdown", currentTheme_.panelAlt, currentTheme_.danger);
+  } else {
+    tft.setTextDatum(MC_DATUM); tft.setTextColor(currentTheme_.textMuted, currentTheme_.panel);
+    tft.drawString("A little something to look forward to.", 240, 278);
   }
 }
 
 void UIManager::renderSettings(TFT_eSPI& tft, const TouchCal::Sample& touch) {
-  // Top bar
-  drawButton(tft, 16, 12, 90, 36, "< Back", currentTheme_.panel, currentTheme_.text);
-
-  tft.setTextDatum(MC_DATUM);
-  tft.setTextColor(currentTheme_.text, currentTheme_.bg);
-  tft.setTextFont(4);
-  tft.drawString("SETTINGS", kWidth / 2, 30);
-
-  fillRoundedRect(tft, 16, 54, kWidth - 32, 254, 12, currentTheme_.panel);
-
+  drawPageHeader(tft, "A CLOCK THAT FEELS LIKE YOU", "Make it yours");
+  fillRoundedRect(tft, 16, 58, kWidth - 32, 238, 12, currentTheme_.panel);
   const Settings& s = settings_.getSettings();
+  drawSettingValue(tft, 58, "TIME FORMAT", s.use24Hour ? "24 hour  >" : "12 hour / AM PM  >");
+  drawSettingValue(tft, 102, "CLOCK LAYOUT", kLayoutNames[s.layoutId % LAYOUT_COUNT]);
+  drawSettingValue(tft, 146, "COLOR PALETTE", kThemeNames[s.themeId % THEME_COUNT]);
 
-  // Row 1: Time Format
-  tft.setTextDatum(ML_DATUM);
-  tft.setTextColor(currentTheme_.text, currentTheme_.panel);
-  tft.setTextFont(4);
-  tft.drawString("Time Format:", 32, 79);
-  drawButton(tft, 250, 60, 200, 38, s.use24Hour ? "24-Hour" : "12-Hour (AM/PM)", currentTheme_.panelAlt, currentTheme_.text);
+  tft.setTextDatum(ML_DATUM); tft.setTextFont(2);
+  tft.setTextColor(currentTheme_.textMuted, currentTheme_.panel);
+  tft.drawString("BRIGHTNESS", 34, 220);
+  drawButton(tft, 250, 197, 48, 38, "-", currentTheme_.panelAlt, currentTheme_.textMuted);
+  char brightness[8]; snprintf(brightness, sizeof(brightness), "%d", s.brightness);
+  tft.setTextDatum(MC_DATUM); tft.setTextColor(currentTheme_.text, currentTheme_.panel);
+  tft.drawString(brightness, 350, 216);
+  drawButton(tft, 402, 197, 48, 38, "+", currentTheme_.panelAlt, currentTheme_.textMuted);
 
-  // Row 2: Layout
-  tft.drawString("Layout:", 32, 125);
-  drawButton(tft, 250, 106, 200, 38, kLayoutNames[s.layoutId % LAYOUT_COUNT], currentTheme_.panelAlt, currentTheme_.text);
-
-  // Row 3: Theme
-  tft.drawString("Theme:", 32, 171);
-  drawButton(tft, 250, 152, 200, 38, kThemeNames[s.themeId % THEME_COUNT], currentTheme_.panelAlt, currentTheme_.text);
-
-  // Row 4: Brightness
-  tft.drawString("Brightness:", 32, 217);
-  drawButton(tft, 250, 198, 48, 38, "-", currentTheme_.panelAlt, currentTheme_.text);
-  char bStr[8]; snprintf(bStr, sizeof(bStr), "%d", s.brightness);
-  tft.setTextDatum(MC_DATUM);
-  tft.setTextColor(currentTheme_.text, currentTheme_.panel);
-  tft.setTextFont(2);
-  tft.drawString(bStr, 350, 217);
-  drawButton(tft, 402, 198, 48, 38, "+", currentTheme_.panelAlt, currentTheme_.text);
-
-  // Bottom action buttons
-  drawButton(tft, 24, 252, 200, 42, "WiFi Setup", currentTheme_.panelAlt, currentTheme_.text);
-  drawButton(tft, 256, 252, 200, 42, "About Device", currentTheme_.panelAlt, currentTheme_.text);
+  drawButton(tft, 24, 250, 200, 36, "Wi-Fi & connection", currentTheme_.panelAlt, currentTheme_.text);
+  drawButton(tft, 256, 250, 200, 36, "About this Clocky", currentTheme_.panelAlt, currentTheme_.text);
 }
 
 void UIManager::renderWifiSetup(TFT_eSPI& tft) {
-  // Top bar
-  drawButton(tft, 16, 12, 90, 36, "< Back", currentTheme_.panel, currentTheme_.text);
-
-  tft.setTextDatum(MC_DATUM);
-  tft.setTextColor(currentTheme_.text, currentTheme_.bg);
-  tft.setTextFont(4);
-  tft.drawString("WI-FI SETUP", kWidth / 2, 30);
-
-  fillRoundedRect(tft, 16, 54, kWidth - 32, 254, 12, currentTheme_.panel);
-
-  tft.setTextDatum(MC_DATUM);
+  drawPageHeader(tft, "03 / CONNECTION", "Stay connected");
+  fillRoundedRect(tft, 16, 58, kWidth - 32, 238, 12, currentTheme_.panel);
+  tft.setTextDatum(MC_DATUM); tft.setTextFont(2);
   tft.setTextColor(currentTheme_.accent, currentTheme_.panel);
-  tft.setTextFont(4);
-  tft.drawString("Hotspot Active!", kWidth / 2, 85);
-
-  tft.setTextFont(2);
-  tft.setTextColor(currentTheme_.text, currentTheme_.panel);
-  tft.drawString("1. Connect phone or PC to Wi-Fi network:", kWidth / 2, 125);
-
-  tft.setTextFont(4);
-  tft.setTextColor(currentTheme_.accent, currentTheme_.panel);
-  tft.drawString("CYD-Clock-Setup", kWidth / 2, 155);
-
-  tft.setTextFont(2);
+  tft.drawString("CLOCKY SETUP HOTSPOT IS READY", 240, 82);
+  tft.setTextFont(4); tft.setTextColor(currentTheme_.text, currentTheme_.panel);
+  tft.drawString("Let's get you online.", 240, 112);
+  tft.drawFastHLine(44, 134, 392, currentTheme_.border);
+  tft.setTextFont(2); tft.setTextColor(currentTheme_.textMuted, currentTheme_.panel);
+  tft.drawString("1  Join this open Wi-Fi network", 240, 155);
+  fillRoundedRect(tft, 100, 172, 280, 36, 7, currentTheme_.panelAlt);
+  tft.setTextColor(currentTheme_.text, currentTheme_.panelAlt);
+  tft.drawString("CYD-Clock-Setup", 240, 190);
   tft.setTextColor(currentTheme_.textMuted, currentTheme_.panel);
-  tft.drawString("(Open network, no password required)", kWidth / 2, 185);
-
-  tft.setTextColor(currentTheme_.text, currentTheme_.panel);
-  tft.drawString("2. Open browser and navigate to:", kWidth / 2, 220);
-
-  tft.setTextFont(4);
+  tft.drawString("2  Then visit this address", 240, 226);
   tft.setTextColor(currentTheme_.accent, currentTheme_.panel);
-  tft.drawString("http://192.168.4.1", kWidth / 2, 250);
-
-  tft.setTextFont(2);
-  tft.setTextColor(currentTheme_.textMuted, currentTheme_.panel);
-  tft.drawString("3. Select your home network and enter password.", kWidth / 2, 280);
+  tft.setTextFont(4); tft.drawString("192.168.4.1", 240, 254);
+  tft.setTextFont(2); tft.setTextColor(currentTheme_.textMuted, currentTheme_.panel);
+  tft.drawString("Tap anywhere to go back", 240, 282);
 }
 
 void UIManager::renderAbout(TFT_eSPI& tft) {
-  // Top bar
-  drawButton(tft, 16, 12, 90, 36, "< Back", currentTheme_.panel, currentTheme_.text);
-
-  tft.setTextDatum(MC_DATUM);
-  tft.setTextColor(currentTheme_.text, currentTheme_.bg);
-  tft.setTextFont(4);
-  tft.drawString("ABOUT CYD CLOCK", kWidth / 2, 30);
-
-  fillRoundedRect(tft, 16, 54, kWidth - 32, 254, 12, currentTheme_.panel);
-
-  tft.setTextFont(2);
-  int y = 72;
-  int dy = 22;
-
-  auto drawInfoLine = [&](const char* label, const char* value) {
-    tft.setTextDatum(ML_DATUM);
-    tft.setTextColor(currentTheme_.textMuted, currentTheme_.panel);
-    tft.drawString(label, 32, y);
-    tft.setTextDatum(MR_DATUM);
-    tft.setTextColor(currentTheme_.text, currentTheme_.panel);
-    tft.drawString(value, kWidth - 32, y);
-    y += dy;
-  };
-
-  drawInfoLine("Hardware:", "ESP32-32E (ST7796S + XPT2046)");
-  drawInfoLine("Firmware:", "v1.0.0");
-
+  drawPageHeader(tft, "04 / YOUR DEVICE", "Small clock. Big heart.");
+  fillRoundedRect(tft, 16, 58, kWidth - 32, 238, 12, currentTheme_.panel);
   bool connected = wifi_ && wifi_->isConnected();
   bool apActive = wifi_ && wifi_->isAPActive();
-  drawInfoLine("WiFi Status:", connected ? "Connected" : (apActive ? "Hotspot Active" : "Offline"));
-  if (connected) {
-    drawInfoLine("SSID:", wifi_->getSSID());
-    drawInfoLine("IP Address:", wifi_->getIP());
-  } else {
-    drawInfoLine("Hotspot:", "CYD-Clock-Setup");
-    drawInfoLine("Portal IP:", "192.168.4.1");
-  }
+  tft.fillCircle(40, 84, 5, connected ? currentTheme_.accent : currentTheme_.danger);
+  tft.setTextDatum(ML_DATUM); tft.setTextFont(2);
+  tft.setTextColor(currentTheme_.text, currentTheme_.panel);
+  tft.drawString(connected ? "Your Clocky is online" : (apActive ? "Setup hotspot is active" : "Your Clocky is offline"), 56, 84);
+  tft.setTextColor(currentTheme_.textMuted, currentTheme_.panel);
+  tft.drawString(connected ? wifi_->getIP() : "192.168.4.1", 56, 103);
 
-  drawInfoLine("Timezone:", clock_.getTimezone());
-  drawInfoLine("NTP Time Sync:", clock_.isTimeSynced() ? "Synchronized" : "Pending Sync");
-
-  char heapStr[32];
-  snprintf(heapStr, sizeof(heapStr), "%u KB free", ESP.getFreeHeap() / 1024);
-  drawInfoLine("Free RAM:", heapStr);
-
-  char uptimeStr[32];
-  uint32_t s = millis() / 1000;
-  snprintf(uptimeStr, sizeof(uptimeStr), "%ud %02uh %02um", s / 86400, (s % 86400) / 3600, (s % 3600) / 60);
-  drawInfoLine("Uptime:", uptimeStr);
+  char memory[24]; snprintf(memory, sizeof(memory), "%u KB free", ESP.getFreeHeap() / 1024);
+  char uptime[32];
+  uint32_t elapsed = millis() / 1000;
+  snprintf(uptime, sizeof(uptime), "%ud %02uh %02um", elapsed / 86400,
+           (elapsed % 86400) / 3600, (elapsed % 3600) / 60);
+  drawSettingValue(tft, 118, "FIRMWARE", "Clocky 1.1");
+  drawSettingValue(tft, 158, "TIME SYNC", clock_.isTimeSynced() ? "Synchronized" : "Waiting");
+  drawSettingValue(tft, 198, "UP AND RUNNING", uptime);
+  tft.setTextDatum(ML_DATUM); tft.setTextColor(currentTheme_.textMuted, currentTheme_.panel);
+  tft.drawString("FREE MEMORY", 34, 278);
+  tft.setTextDatum(MR_DATUM); tft.setTextColor(currentTheme_.text, currentTheme_.panel);
+  tft.drawString(memory, 434, 278);
 }
 
 void UIManager::drawRoundedRect(TFT_eSPI& tft, int16_t x, int16_t y, int16_t w, int16_t h, int16_t r, uint16_t color) {
@@ -1268,9 +1228,12 @@ void UIManager::fillRoundedRect(TFT_eSPI& tft, int16_t x, int16_t y, int16_t w, 
 }
 
 void UIManager::drawButton(TFT_eSPI& tft, int16_t x, int16_t y, int16_t w, int16_t h, const char* label, uint16_t bg, uint16_t textColor, bool pressed) {
+  tft.setTextSize(1);
   uint16_t fillBg = pressed ? blendColors(bg, 0xFFFF, 0.25f) : bg;
   tft.fillRoundRect(x, y, w, h, 8, fillBg);
-  tft.drawRoundRect(x, y, w, h, 8, currentTheme_.border);
+  if (bg != currentTheme_.accent) {
+    tft.drawRoundRect(x, y, w, h, 8, currentTheme_.border);
+  }
   tft.setTextDatum(MC_DATUM);
   tft.setTextColor(textColor, fillBg);
   tft.setTextFont(2);
@@ -1282,75 +1245,24 @@ bool UIManager::isInRect(int16_t x, int16_t y, int16_t rx, int16_t ry, int16_t r
 }
 
 void UIManager::applyTheme(uint8_t themeId) {
-  switch (themeId) {
-    case THEME_NORD:
-      currentTheme_.bg = 0x29A7;
-      currentTheme_.panel = 0x3A2A;
-      currentTheme_.panelAlt = 0x426C;
-      currentTheme_.accent = 0x861A;
-      currentTheme_.text = 0xEF7D;
-      currentTheme_.textMuted = 0xD6FA;
-      currentTheme_.textOnAccent = 0x29A7;
-      currentTheme_.border = 0x4B0D;
-      currentTheme_.danger = 0xBC8D;
-      break;
-    case THEME_DRACULA:
-      currentTheme_.bg = 0x2947;
-      currentTheme_.panel = 0x31C8;
-      currentTheme_.panelAlt = 0x424B;
-      currentTheme_.accent = 0xFBD8;
-      currentTheme_.text = 0xFFBD;
-      currentTheme_.textMuted = 0x6394;
-      currentTheme_.textOnAccent = 0x2145;
-      currentTheme_.border = 0x6274;
-      currentTheme_.danger = 0xFAAA;
-      break;
-    case THEME_SOLARIZED_LIGHT:
-      currentTheme_.bg = 0xFF58;
-      currentTheme_.panel = 0xEF7A;
-      currentTheme_.panelAlt = 0xE6D8;
-      currentTheme_.accent = 0x245A;
-      currentTheme_.text = 0x63EA;
-      currentTheme_.textMuted = 0x9514;
-      currentTheme_.textOnAccent = 0xFFFF;
-      currentTheme_.border = 0xD699;
-      currentTheme_.danger = 0xD985;
-      break;
-    case THEME_HIGH_CONTRAST:
-      currentTheme_.bg = 0x0000;
-      currentTheme_.panel = 0x1082;
-      currentTheme_.panelAlt = 0x2104;
-      currentTheme_.accent = 0xFFE0;
-      currentTheme_.text = 0xFFFF;
-      currentTheme_.textMuted = 0xCE59;
-      currentTheme_.textOnAccent = 0x0000;
-      currentTheme_.border = 0xFFFF;
-      currentTheme_.danger = 0xF800;
-      break;
-    case THEME_WARM:
-      currentTheme_.bg = 0x28C3;
-      currentTheme_.panel = 0x3905;
-      currentTheme_.panelAlt = 0x4987;
-      currentTheme_.accent = 0xFD20;
-      currentTheme_.text = 0xFFDC;
-      currentTheme_.textMuted = 0xBA4B;
-      currentTheme_.textOnAccent = 0x0000;
-      currentTheme_.border = 0x5A48;
-      currentTheme_.danger = 0xF986;
-      break;
-    case THEME_DEFAULT:
-    default:
-      currentTheme_.bg = 0x0841;
-      currentTheme_.panel = 0x18E3;
-      currentTheme_.panelAlt = 0x2124;
-      currentTheme_.accent = 0x07FF;
-      currentTheme_.text = 0xFFFF;
-      currentTheme_.textMuted = 0x8410;
-      currentTheme_.textOnAccent = 0x0000;
-      currentTheme_.border = 0x2945;
-      currentTheme_.danger = 0xF800;
-      break;
-  }
+  const uint32_t palettes[6][6] = {
+    {0x242824, 0x30352F, 0x41473E, 0xEDAA7F, 0xF5F4E9, 0x9EA69B},
+    {0x2E3440, 0x3B4252, 0x4C566A, 0x88C0D0, 0xECEFF4, 0xAEB9CC},
+    {0x282A36, 0x353746, 0x44475A, 0xBD93F9, 0xF8F8F2, 0xB1ACCB},
+    {0xF4F0E3, 0xE6E1D2, 0xD5D2C5, 0x376B74, 0x34494B, 0x647C7B},
+    {0x000000, 0x181818, 0x242424, 0xFFFF00, 0xFFFFFF, 0xCCCCCC},
+    {0x30231E, 0x413129, 0x594539, 0xE9A56B, 0xF8E9D9, 0xBDA692}
+  };
+  const auto& colors = palettes[themeId % THEME_COUNT];
+  currentTheme_.bg = rgbTo565(colors[0]);
+  currentTheme_.panel = rgbTo565(colors[1]);
+  currentTheme_.panelAlt = rgbTo565(colors[2]);
+  currentTheme_.accent = rgbTo565(colors[3]);
+  currentTheme_.text = rgbTo565(colors[4]);
+  currentTheme_.textMuted = rgbTo565(colors[5]);
+  currentTheme_.textOnAccent = themeId == THEME_SOLARIZED_LIGHT ? 0xFFFF : rgbTo565(0x242824);
+  currentTheme_.border = rgbTo565(colors[2]);
+  currentTheme_.danger = rgbTo565(0xC75B50);
 }
 
 uint16_t UIManager::rgbTo565(uint32_t rgb) {

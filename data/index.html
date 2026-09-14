@@ -3,177 +3,76 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="theme-color" content="#0d1b2a">
-  <title>CYD Clock</title>
-  <link rel="stylesheet" href="/style.css">
+  <meta name="theme-color" content="#f5f4f0">
+  <title>Clocky — A little more present.</title>
+  <link rel="stylesheet" href="/style.css?v=2">
+  <link rel="stylesheet" href="/device-faces.css?v=1">
   <link rel="manifest" href="/manifest.json">
 </head>
 <body>
   <header class="header">
-    <h1>CYD Clock</h1>
-    <div class="connection-status" id="connectionStatus">
-      <span class="status-dot"></span>
-      <span>Connecting...</span>
-    </div>
-  </header>
-
-  <main class="main">
-    <nav class="tabs" role="tablist">
-      <button class="tab active" role="tab" data-tab="clock">Clock</button>
-      <button class="tab" role="tab" data-tab="countdowns">Countdowns</button>
-      <button class="tab" role="tab" data-tab="settings">Settings</button>
+    <a class="brand" href="#" aria-label="Clocky home"><span class="brand-mark" aria-hidden="true">◷</span>clocky<span class="brand-dot">.</span></a>
+    <nav class="tabs" role="tablist" aria-label="Main navigation">
+      <button class="tab active" id="nav-clock" role="tab" aria-controls="tab-clock" aria-selected="true" data-tab="clock">Overview</button>
+      <button class="tab" id="nav-countdowns" role="tab" aria-controls="tab-countdowns" aria-selected="false" data-tab="countdowns">Countdowns</button>
+      <button class="tab" id="nav-settings" role="tab" aria-controls="tab-settings" aria-selected="false" data-tab="settings">Device settings</button>
     </nav>
-
-    <section class="tab-panel active" id="tab-clock" role="tabpanel">
-      <div class="clock-preview">
-        <div class="preview-time" id="previewTime">--:--:--</div>
-        <div class="preview-date" id="previewDate">--</div>
-        <div class="preview-weekday" id="previewWeekday">--</div>
-        <div class="preview-countdown" id="previewCountdown"></div>
+    <div class="connection-status" id="connectionStatus"><span class="status-dot"></span><span>Connecting</span></div>
+  </header>
+  <main class="main">
+    <section class="tab-panel active" id="tab-clock" role="tabpanel" aria-labelledby="nav-clock">
+      <div class="page-heading"><div><p class="eyebrow">YOUR TIME, WELL SPENT</p><h1 id="greeting">A little more present.</h1><p>A clear view of your day. Space for what matters.</p></div><button class="btn btn-secondary" id="deskModeBtn">↗ Desk mode</button></div>
+      <div class="dashboard-grid">
+        <div class="clock-column">
+          <section class="clock-preview" id="clockPreview" aria-label="Clock display preview">
+            <div class="preview-top"><span><i class="live-dot"></i> CLOCKY DISPLAY</span><span id="previewZone">Your local time</span></div>
+            <div class="preview-body">
+              <div class="preview-weekday" id="previewWeekday">Time to settle in.</div>
+              <div class="preview-time" id="previewTime">--:--</div>
+              <div class="analog-face" aria-hidden="true"><i class="hand hour-hand"></i><i class="hand minute-hand"></i><i class="hand second-hand"></i><b></b></div>
+              <div class="preview-date" id="previewDate">Waiting for your Clocky</div>
+            </div>
+            <div class="preview-countdown" id="previewCountdown"></div>
+            <div class="day-track"><span id="dayProgress"></span></div>
+            <div class="preview-bottom"><span id="dayCaption">Today, at your pace</span><span id="syncLabel">Connecting to device</span></div>
+            <button class="btn desk-exit" id="exitDeskModeBtn">✕ Exit desk mode</button>
+          </section>
+          <div class="preview-controls"><span>Make it yours</span><div class="layout-picker" aria-label="Device clock layout"><button data-layout="0" class="selected">Dashboard</button><button data-layout="1">Minimal</button><button data-layout="2">Analog</button><button data-layout="3">Focus</button><button data-layout="4">Flip</button><button data-layout="5">Pixel</button><button data-layout="6">Smooth</button></div><button class="text-btn" id="customizeBtn">Customize ↗</button></div>
+        </div>
+        <section class="focus-card card">
+          <div class="card-heading"><h2>Find your focus</h2><span class="small-badge" id="focusState">READY</span></div>
+          <p class="muted">One thing at a time.</p>
+          <div class="focus-dial" id="focusDial"><div><span id="focusTime">25:00</span><span class="focus-label" id="focusLabel">A fresh start</span></div></div>
+          <div class="focus-presets" aria-label="Focus duration"><button data-minutes="5">5m break</button><button data-minutes="25" class="selected">25m focus</button><button data-minutes="50">50m deep</button></div>
+          <div class="focus-actions"><button class="btn btn-primary" id="focusToggleBtn" disabled>Start session <span aria-hidden="true">→</span></button><button class="icon-btn" id="focusResetBtn" aria-label="Reset focus timer" title="Reset timer" disabled>↺</button></div>
+          <p class="focus-footnote" id="focusSessions">Synced with your Clocky · resets on restart</p>
+        </section>
+        <section class="card upcoming-card"><div class="card-heading"><h2>On the horizon</h2><button class="text-btn" id="viewCountdownsBtn">View all ↗</button></div><div id="upcomingEvents" class="upcoming-events"></div><button class="quick-add" id="quickAddBtn"><span>＋</span> Something to look forward to <span>→</span></button></section>
+        <section class="card world-card"><div class="card-heading"><h2>Elsewhere, now</h2><button class="text-btn" id="addWorldBtn" aria-label="Add world clock">＋ Add city</button></div><div id="worldClocks" class="world-clocks"></div><p class="world-note">A little closer, wherever they are.</p></section>
       </div>
+      <footer class="page-footer"><span><i class="status-dot"></i> Made for your desk. Designed for your day.</span><span>CLOCKY / 01</span></footer>
     </section>
-
-    <section class="tab-panel" id="tab-countdowns" role="tabpanel">
-      <div class="panel-header">
-        <h2>Countdowns</h2>
-        <button class="btn btn-primary" id="addCountdownBtn">+ Add</button>
-      </div>
+    <section class="tab-panel" id="tab-countdowns" role="tabpanel" aria-labelledby="nav-countdowns">
+      <div class="page-heading"><div><p class="eyebrow">GOOD THINGS TAKE TIME</p><h1>Look forward to it.</h1><p>The milestones, little moments, and everything in between.</p></div><button class="btn btn-primary" id="addCountdownBtn">＋ New countdown</button></div>
+      <div class="template-strip"><span>A quick start</span><button data-template="Birthday">🎂 Birthday</button><button data-template="Vacation">☀ Vacation</button><button data-template="Deadline">⚑ Deadline</button><span class="muted" id="eventCount">0 / 10 events</span></div>
+      <div class="list-toolbar"><label class="search-field"><span aria-hidden="true">⌕</span><input id="countdownSearch" type="search" placeholder="Find a countdown…" aria-label="Search countdowns"></label><div class="filter-picker" aria-label="Filter countdowns"><button data-filter="all" class="selected">All events</button><button data-filter="upcoming">Upcoming</button><button data-filter="past">Past</button></div></div>
       <div class="countdown-list" id="countdownList"></div>
     </section>
-
-    <section class="tab-panel" id="tab-settings" role="tabpanel">
+    <section class="tab-panel" id="tab-settings" role="tabpanel" aria-labelledby="nav-settings">
+      <div class="page-heading"><div><p class="eyebrow">A CLOCK THAT FEELS LIKE YOU</p><h1>Your desk. Your details.</h1><p>Personalize your display and keep everything connected.</p></div><span class="save-status" id="saveStatus" role="status">Changes save automatically</span></div>
       <div class="settings-sections">
-        <section class="settings-section">
-          <h3>Wi-Fi</h3>
-          <div class="wifi-status">
-            <div class="info-row">
-              <span>Status:</span>
-              <span id="wifiStatus">Unknown</span>
-            </div>
-            <div class="info-row">
-              <span>SSID:</span>
-              <span id="wifiSSID">--</span>
-            </div>
-            <div class="info-row">
-              <span>IP Address:</span>
-              <span id="wifiIP">--</span>
-            </div>
-            <div class="info-row">
-              <span>Signal:</span>
-              <span id="wifiRSSI">--</span>
-            </div>
-            <button class="btn btn-secondary" id="scanWifiBtn">Scan Networks</button>
-            <button class="btn btn-danger" id="forgetWifiBtn">Forget Wi-Fi</button>
-          </div>
-          <div class="wifi-networks" id="wifiNetworks" style="display:none;"></div>
-        </section>
-
-        <section class="settings-section">
-          <h3>Time</h3>
-          <div class="setting-row">
-            <label>Timezone</label>
-            <select id="timezoneSelect"></select>
-          </div>
-          <div class="setting-row">
-            <label>Format</label>
-            <select id="timeFormatSelect">
-              <option value="12">12 Hour (AM/PM)</option>
-              <option value="24">24 Hour</option>
-            </select>
-          </div>
-        </section>
-
-        <section class="settings-section">
-          <h3>Display</h3>
-          <div class="setting-row">
-            <label>Layout</label>
-            <select id="layoutSelect">
-              <option value="0">Digital</option>
-              <option value="1">Minimal</option>
-              <option value="2">Analog</option>
-              <option value="3">Focus</option>
-            </select>
-          </div>
-          <div class="setting-row">
-            <label>Theme</label>
-            <select id="themeSelect">
-              <option value="0">Default</option>
-              <option value="1">Nord</option>
-              <option value="2">Dracula</option>
-              <option value="3">Solarized Light</option>
-              <option value="4">High Contrast</option>
-              <option value="5">Warm</option>
-            </select>
-          </div>
-          <div class="setting-row">
-            <label>Brightness</label>
-            <input type="range" id="brightnessSlider" min="0" max="255" value="200">
-            <span id="brightnessValue">200</span>
-          </div>
-        </section>
-
-        <section class="settings-section">
-          <h3>About</h3>
-          <div class="info-row">
-            <span>Firmware:</span>
-            <span id="fwVersion">1.0.0</span>
-          </div>
-          <div class="info-row">
-            <span>Uptime:</span>
-            <span id="uptime">--</span>
-          </div>
-          <div class="info-row">
-            <span>Free Heap:</span>
-            <span id="freeHeap">--</span>
-          </div>
-          <button class="btn btn-danger" id="rebootBtn">Reboot Device</button>
-        </section>
+        <section class="settings-section"><div class="section-number">01 / APPEARANCE</div><h2>Set the mood.</h2><p class="muted">A palette for every kind of day.</p><div class="theme-picker" id="themePicker"></div><select id="themeSelect" aria-label="Display theme" class="sr-only"><option value="0">Graphite</option><option value="1">Nord</option><option value="2">Dracula</option><option value="3">Paper</option><option value="4">Contrast</option><option value="5">Ember</option></select><div class="setting-row"><label for="layoutSelect">Clock style</label><select id="layoutSelect"><option value="0">Dashboard</option><option value="1">Minimal</option><option value="2">Analog</option><option value="3">Focus timer</option><option value="4">Mechanical flip</option><option value="5">Pixel digital</option><option value="6">Smooth digital</option></select></div><div class="setting-row"><label for="brightnessSlider">Brightness</label><input type="range" id="brightnessSlider" min="0" max="255" value="200"><span id="brightnessValue">200</span></div></section>
+        <section class="settings-section"><div class="section-number">02 / TIME & PLACE</div><h2>Right here. Right now.</h2><p class="muted">Your Clocky keeps time over Wi-Fi.</p><div class="setting-row"><label for="timezoneSelect">Timezone</label><select id="timezoneSelect"></select></div><div class="setting-row"><label for="timeFormatSelect">Time format</label><select id="timeFormatSelect"><option value="12">12 hour · AM / PM</option><option value="24">24 hour</option></select></div><div class="info-row"><span>Time synchronization</span><span id="timeSyncStatus">Checking…</span></div></section>
+        <section class="settings-section"><div class="section-number">03 / CONNECTION</div><h2>Stay connected.</h2><div class="wifi-status"><div class="info-row"><span>Status</span><span id="wifiStatus">Unknown</span></div><div class="info-row"><span>Network</span><span id="wifiSSID">—</span></div><div class="info-row"><span>IP address</span><span id="wifiIP">—</span></div><div class="info-row"><span>Signal strength</span><span id="wifiRSSI">—</span></div><div class="form-actions"><button class="btn btn-secondary" id="scanWifiBtn">Scan networks</button><button class="text-btn danger" id="forgetWifiBtn">Forget network</button></div></div><div class="wifi-networks" id="wifiNetworks" style="display:none"></div></section>
+        <section class="settings-section"><div class="section-number">04 / YOUR DEVICE</div><h2>Small clock. Big heart.</h2><div class="info-row"><span>Firmware</span><span id="fwVersion">—</span></div><div class="info-row"><span>Up and running</span><span id="uptime">—</span></div><div class="info-row"><span>Free memory</span><span id="freeHeap">—</span></div><div class="form-actions"><button class="btn btn-secondary" id="rebootBtn">Restart Clocky</button></div><p class="muted device-note">Your settings and events stay saved on your device.</p></section>
       </div>
     </section>
   </main>
-
-  <!-- Countdown Modal -->
-  <div class="modal" id="countdownModal" role="dialog" aria-modal="true">
-    <div class="modal-content">
-      <h3 id="modalTitle">Add Countdown</h3>
-      <form id="countdownForm">
-        <input type="hidden" id="editCountdownId">
-        <div class="form-row">
-          <label>Name</label>
-          <input type="text" id="cdName" required maxlength="31" placeholder="Christmas">
-        </div>
-        <div class="form-row">
-          <label>Date</label>
-          <input type="date" id="cdDate" required>
-        </div>
-        <div class="form-row">
-          <label>Time (optional)</label>
-          <input type="time" id="cdTime">
-        </div>
-        <div class="form-row">
-          <label>Color</label>
-          <input type="color" id="cdColor" value="#00ffff">
-        </div>
-        <div class="form-row checkbox-row">
-          <label class="checkbox-label">
-            <input type="checkbox" id="cdShowOnMain" checked>
-            <span>Show on main clock</span>
-          </label>
-        </div>
-        <div class="form-row checkbox-row">
-          <label class="checkbox-label">
-            <input type="checkbox" id="cdHideWhenExpired">
-            <span>Hide when expired</span>
-          </label>
-        </div>
-        <div class="form-actions">
-          <button type="button" class="btn btn-secondary" id="cancelCountdownBtn">Cancel</button>
-          <button type="submit" class="btn btn-primary">Save</button>
-        </div>
-      </form>
-    </div>
+  <div class="modal" id="countdownModal" role="dialog" aria-modal="true" aria-labelledby="modalTitle" aria-hidden="true" inert>
+    <div class="modal-content"><p class="eyebrow">MAKE IT A MOMENT</p><h2 id="modalTitle">New countdown</h2><p class="muted">Give yourself something to look forward to.</p><form id="countdownForm"><input type="hidden" id="editCountdownId"><div class="form-row"><label for="cdName">Event name</label><input type="text" id="cdName" required maxlength="31" placeholder="A weekend away"></div><div class="form-grid"><div class="form-row"><label for="cdDate">Date</label><input type="date" id="cdDate" required></div><div class="form-row"><label for="cdTime">Time · optional</label><input type="time" id="cdTime"></div></div><p class="field-note">Uses this browser’s local timezone.</p><div class="form-row"><label for="cdColor">Event color</label><input type="color" id="cdColor" value="#e87545"></div><div class="form-row checkbox-row"><label class="checkbox-label"><input type="checkbox" id="cdShowOnMain" checked><span>Feature on the clock display</span></label></div><div class="form-row checkbox-row"><label class="checkbox-label"><input type="checkbox" id="cdHideWhenExpired"><span>Hide on device after the event</span></label></div><div class="form-actions"><button type="button" class="btn btn-secondary" id="cancelCountdownBtn">Cancel</button><button type="submit" class="btn btn-primary">Save countdown →</button></div></form></div>
   </div>
-
-  <script src="/app.js"></script>
+  <dialog id="actionDialog" class="action-dialog"><form method="dialog"><p class="eyebrow">CLOCKY</p><h2 id="actionTitle"></h2><p id="actionMessage" class="muted"></p><label id="actionInputLabel" hidden><span id="actionFieldLabel"></span><input id="actionInput" autocomplete="off"></label><label id="actionSelectLabel" hidden>City<select id="actionSelect"></select></label><div class="form-actions"><button class="btn btn-secondary" value="cancel">Cancel</button><button class="btn btn-primary" value="ok">Continue</button></div></form></dialog>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script src="/app.js?v=2"></script>
 </body>
 </html>

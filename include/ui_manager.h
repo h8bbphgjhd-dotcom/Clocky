@@ -6,6 +6,7 @@
 #include "countdown_manager.h"
 #include "settings_manager.h"
 #include "touch_map.h"
+#include "focus_timer.h"
 
 enum ScreenState {
   SCREEN_CLOCK = 0,
@@ -22,7 +23,10 @@ enum LayoutId {
   LAYOUT_MINIMAL = 1,
   LAYOUT_ANALOG = 2,
   LAYOUT_FOCUS = 3,
-  LAYOUT_COUNT = 4
+  LAYOUT_FLIP = 4,
+  LAYOUT_PIXEL = 5,
+  LAYOUT_SMOOTH = 6,
+  LAYOUT_COUNT = 7
 };
 
 enum ThemeId {
@@ -51,7 +55,7 @@ class WiFiManagerWrapper;
 
 class UIManager {
  public:
-  UIManager(SettingsManager& settings, ClockManager& clock, CountdownManager& countdown);
+  UIManager(SettingsManager& settings, ClockManager& clock, CountdownManager& countdown, FocusTimer& focus);
   void begin(TFT_eSPI& tft, XPT2046_Touchscreen& touch);
   void render(TFT_eSPI& tft, const TouchCal::Sample& touch);
   void loop(TFT_eSPI& tft, XPT2046_Touchscreen& touch);
@@ -82,6 +86,7 @@ class UIManager {
   SettingsManager& settings_;
   ClockManager& clock_;
   CountdownManager& countdown_;
+  FocusTimer& focus_;
   XPT2046_Touchscreen* touch_ = nullptr;
   WiFiManagerWrapper* wifi_ = nullptr;
   bool screenNeedsRedraw_ = true;
@@ -111,12 +116,20 @@ class UIManager {
   } touchState_;
   uint32_t lastTapTime_ = 0;
   
-  // Animation
-  uint32_t lastFrame_ = 0;
-  uint8_t menuAnimProgress_ = 0;  // 0-255
-  bool menuAnimating_ = false;
-  bool menuOpening_ = true;
-  
+  // Nonblocking backlight transitions avoid allocating full-screen framebuffers.
+  enum class MotionPhase { Idle, FadeOut, FadeIn };
+  MotionPhase motionPhase_ = MotionPhase::Idle;
+  uint32_t motionStarted_ = 0;
+  uint32_t renderedView_ = UINT32_MAX;
+  bool waitForTouchRelease_ = false;
+  float displayedBrightness_ = 0;
+  float brightnessFrom_ = 0;
+  uint8_t brightnessTarget_ = 0;
+  uint32_t brightnessStarted_ = 0;
+  int lastBacklight_ = -1;
+  void renderContent(TFT_eSPI& tft, const TouchCal::Sample& touch);
+  void updateBacklight(uint32_t now, float visibility);
+
   // Countdown edit state
   char editingCountdownId_[16] = "";
   char editName_[32] = "";
@@ -142,11 +155,20 @@ class UIManager {
   void renderAbout(TFT_eSPI& tft);
   void renderWifiSetup(TFT_eSPI& tft);
   
+  void drawClockChrome(TFT_eSPI& tft, const char* label);
+  void drawNextEvent(TFT_eSPI& tft, int y);
+  void drawPageHeader(TFT_eSPI& tft, const char* eyebrow, const char* title,
+                      const char* action = nullptr);
+  void drawSettingValue(TFT_eSPI& tft, int y, const char* label, const char* value);
+
   // Layout-specific clock rendering
   void renderDigitalLayout(TFT_eSPI& tft);
   void renderMinimalLayout(TFT_eSPI& tft);
   void renderAnalogLayout(TFT_eSPI& tft);
   void renderFocusLayout(TFT_eSPI& tft);
+  void renderFlipLayout(TFT_eSPI& tft);
+  void renderPixelLayout(TFT_eSPI& tft);
+  void renderSmoothLayout(TFT_eSPI& tft);
   
   // Touch handling
   void handleTouch(TFT_eSPI& tft, const TouchCal::Sample& touch);
@@ -172,4 +194,3 @@ class UIManager {
   // Time formatting helpers
   void formatCountdownRemaining(const Countdown* cd, char* buffer, size_t size, bool shortFormat = false);
 };
-
