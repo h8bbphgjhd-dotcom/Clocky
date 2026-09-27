@@ -110,7 +110,7 @@ Clocky/
 
 ## 3D Printed Case
 
-A 3D-printable enclosure is being developed for Clocky.
+A 3D-printable enclosure is developed for Clocky.
 
 The case is designed to:
 
@@ -118,6 +118,7 @@ The case is designed to:
 * Provide access to ports
 * Support the display at a comfortable desk viewing angle
 * Be easy to print on consumer FDM printers
+* Print the Case! https://makerworld.com/en/models/3272854-clocky-a-desk-companion#profileId-3825813
 
 ---
 
