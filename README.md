@@ -79,6 +79,10 @@ Connect to the Clocky Wi-Fi setup network and configure your Wi-Fi credentials.
 
 Once configured, Clocky will connect to your network and make its web interface available.
 
+On the device, open **Make it yours > Wi-Fi & connection** to see the connected
+network and IP address. Enter the displayed address in a browser on the same
+Wi-Fi network to open the web interface.
+
 ---
 
 ## Web Interface
@@ -88,10 +92,27 @@ Clocky includes a built-in web server.
 Use the web interface to configure features such as:
 
 * Wi-Fi settings
-* Clock settings
+* Clock settings, including timezone
 * Countdown timers
 * Display preferences
 * Colors and layout
+
+### Change timezone
+
+In the web interface, open **Device settings > Time & place > Timezone**.
+On the touchscreen, tap the clock, open **Make it yours**, then tap **Timezone**.
+Use **Prev** and **Next** to browse cities and tap a timezone to save it.
+Both interfaces use the same supported list. Changes apply immediately, work
+while offline, and persist after restart. Daylight saving time follows the
+selected zone's firmware rules. Connected web interfaces receive timezone changes
+from the device automatically.
+
+After installing this update, upload both the firmware and web interface files:
+
+```bash
+pio run --target upload
+pio run --target uploadfs
+```
 
 ---
 

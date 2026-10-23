@@ -1,4 +1,5 @@
 #include "settings_manager.h"
+#include "timezones.h"
 #include <Preferences.h>
 #include <ArduinoJson.h>
 #include <cstring>
@@ -96,11 +97,17 @@ void SettingsManager::saveCountdowns() {
   prefs_.putString("countdowns", json);
 }
 
-void SettingsManager::setTimezone(const char* tz) {
-  strlcpy(settings_.timezone, tz, sizeof(settings_.timezone));
-  saveSettings();
-  setenv("TZ", tz, 1);
+bool SettingsManager::setTimezone(const char* tz) {
+  const int index = timezoneIndex(tz);
+  if (index < 0) return false;
+  const TzEntry& zone = kTimezoneTable[index];
+  if (strcmp(settings_.timezone, zone.name) != 0) {
+    strlcpy(settings_.timezone, zone.name, sizeof(settings_.timezone));
+    saveSettings();
+  }
+  setenv("TZ", zone.posix, 1);
   tzset();
+  return true;
 }
 
 void SettingsManager::setUse24Hour(bool use24) {

@@ -15,7 +15,8 @@ enum ScreenState {
   SCREEN_COUNTDOWN_EDIT = 3,
   SCREEN_SETTINGS = 4,
   SCREEN_WIFI_SETUP = 5,
-  SCREEN_ABOUT = 6
+  SCREEN_ABOUT = 6,
+  SCREEN_TIMEZONE = 7
 };
 
 enum LayoutId {
@@ -91,6 +92,9 @@ class UIManager {
   WiFiManagerWrapper* wifi_ = nullptr;
   bool screenNeedsRedraw_ = true;
   int lastSecond_ = -1;
+  char lastTimezone_[32] = "";
+  uint32_t lastWifiCheck_ = 0;
+  char lastWifiDetails_[64] = "";
   uint8_t countdownPage_ = 0;
   int editYear_ = 2026;
   int editMonth_ = 12;
@@ -141,6 +145,7 @@ class UIManager {
   uint8_t editField_ = 0;  // 0=name, 1=date, 2=time, 3=color, 4=showOnMain, 5=hideWhenExpired
   
   // Settings UI state
+  uint8_t timezonePage_ = 0;
   uint8_t settingsSection_ = 0;  // 0=wifi, 1=time, 2=display, 3=about
   
   // Theme colors
@@ -152,6 +157,7 @@ class UIManager {
   void renderCountdowns(TFT_eSPI& tft, const TouchCal::Sample& touch);
   void renderCountdownEdit(TFT_eSPI& tft, const TouchCal::Sample& touch);
   void renderSettings(TFT_eSPI& tft, const TouchCal::Sample& touch);
+  void renderTimezone(TFT_eSPI& tft);
   void renderAbout(TFT_eSPI& tft);
   void renderWifiSetup(TFT_eSPI& tft);
   
@@ -177,6 +183,7 @@ class UIManager {
   void handleCountdownsTouch(const TouchCal::Sample& touch);
   void handleCountdownEditTouch(const TouchCal::Sample& touch);
   void handleSettingsTouch(const TouchCal::Sample& touch);
+  void handleTimezoneTouch(const TouchCal::Sample& touch);
   void handleAboutTouch(const TouchCal::Sample& touch);
   void handleWifiSetupTouch(const TouchCal::Sample& touch);
   

@@ -17,7 +17,7 @@ struct Countdown {
 };
 
 struct Settings {
-  char timezone[32];     // POSIX TZ string, e.g., "America/Denver"
+  char timezone[32];     // Supported timezone name, e.g., "America/Denver"
   bool use24Hour;        // 24-hour format
   uint8_t layoutId;      // 0=Digital, 1=Minimal, 2=Analog, 3=Focus
   uint8_t themeId;       // Theme preset index
@@ -33,7 +33,7 @@ class SettingsManager {
   
   // Settings
   const Settings& getSettings() const { return settings_; }
-  void setTimezone(const char* tz);
+  bool setTimezone(const char* tz);
   void setUse24Hour(bool use24);
   void setLayoutId(uint8_t layout);
   void setThemeId(uint8_t theme);

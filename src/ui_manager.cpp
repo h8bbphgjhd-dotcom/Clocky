@@ -1,4 +1,5 @@
 #include "ui_manager.h"
+#include "timezones.h"
 #include "wifi_manager.h"
 #include "pins.h"
 #include <cmath>
@@ -110,7 +111,23 @@ void UIManager::render(TFT_eSPI& tft, const TouchCal::Sample& touch) {
     }
   }
 
+  // Refresh connection details while this screen stays open, including DHCP changes.
+  if (currentScreen_ == SCREEN_WIFI_SETUP && wifi_ && now - lastWifiCheck_ >= 1000) {
+    lastWifiCheck_ = now;
+    char details[64];
+    snprintf(details, sizeof(details), "%d|%d|%s|%s", wifi_->isConnected(),
+             wifi_->isAPActive(), wifi_->getIP(), wifi_->getSSID());
+    if (strcmp(details, lastWifiDetails_) != 0) {
+      strlcpy(lastWifiDetails_, details, sizeof(lastWifiDetails_));
+      screenNeedsRedraw_ = true;
+    }
+  }
+
   const Settings& settings = settings_.getSettings();
+  if (strcmp(lastTimezone_, settings.timezone) != 0) {
+    strlcpy(lastTimezone_, settings.timezone, sizeof(lastTimezone_));
+    screenNeedsRedraw_ = true;
+  }
   const uint32_t view = static_cast<uint32_t>(currentScreen_) |
       (static_cast<uint32_t>(menuVisible_) << 3) |
       (static_cast<uint32_t>(settings.layoutId) << 4) |
@@ -181,6 +198,9 @@ void UIManager::renderContent(TFT_eSPI& tft, const TouchCal::Sample& touch) {
     screenNeedsRedraw_ = false;
     tft.fillScreen(currentTheme_.bg);
     switch (currentScreen_) {
+      case SCREEN_TIMEZONE:
+        renderTimezone(tft);
+        break;
       case SCREEN_SETTINGS:
         renderSettings(tft, touch);
         break;
@@ -237,7 +257,7 @@ void UIManager::startWifiSetup() {
   menuVisible_ = false;
   currentScreen_ = SCREEN_WIFI_SETUP;
   screenNeedsRedraw_ = true;
-  if (wifi_) {
+  if (wifi_ && !wifi_->isConnected()) {
     wifi_->startConfigPortal();
   }
 }
@@ -370,6 +390,9 @@ void UIManager::handleTouch(TFT_eSPI& tft, const TouchCal::Sample& touch) {
             switch (currentScreen_) {
               case SCREEN_CLOCK:
                 handleClockTouch(tap);
+                break;
+              case SCREEN_TIMEZONE:
+                handleTimezoneTouch(tap);
                 break;
               case SCREEN_SETTINGS:
                 handleSettingsTouch(tap);
@@ -614,54 +637,49 @@ void UIManager::handleSettingsTouch(const TouchCal::Sample& touch) {
     return;
   }
 
-  // Row 1: Time format (visual: y=60, h=38)
-  if (touch.y >= 50 && touch.y <= 95 && touch.x >= 180) {
+  if (isInRect(touch.x, touch.y, 24, 58, 432, 36)) {
+    const int index = timezoneIndex(settings_.getSettings().timezone);
+    timezonePage_ = index < 0 ? 0 : index / 5;
+    currentScreen_ = SCREEN_TIMEZONE;
+  } else if (isInRect(touch.x, touch.y, 24, 94, 432, 36)) {
     settings_.setUse24Hour(!settings_.getSettings().use24Hour);
-    screenNeedsRedraw_ = true;
-    return;
-  }
-
-  // Row 2: Layout cycle (visual: y=106, h=38)
-  if (touch.y >= 96 && touch.y <= 140 && touch.x >= 180) {
+  } else if (isInRect(touch.x, touch.y, 24, 130, 432, 36)) {
     cycleLayout();
-    screenNeedsRedraw_ = true;
-    return;
-  }
-
-  // Row 3: Theme cycle (visual: y=152, h=38)
-  if (touch.y >= 141 && touch.y <= 185 && touch.x >= 180) {
+  } else if (isInRect(touch.x, touch.y, 24, 166, 432, 36)) {
     setTheme((settings_.getSettings().themeId + 1) % THEME_COUNT);
+  } else if (isInRect(touch.x, touch.y, 250, 205, 48, 36)) {
+    const uint8_t cur = settings_.getSettings().brightness;
+    settings_.setBrightness(cur > 35 ? cur - 35 : 20);
+  } else if (isInRect(touch.x, touch.y, 402, 205, 48, 36)) {
+    const uint8_t cur = settings_.getSettings().brightness;
+    settings_.setBrightness(cur < 220 ? cur + 35 : 255);
+  } else if (isInRect(touch.x, touch.y, 24, 250, 200, 36)) {
+    startWifiSetup();
+  } else if (isInRect(touch.x, touch.y, 256, 250, 200, 36)) {
+    showAbout();
+  }
+  screenNeedsRedraw_ = true;
+}
+
+void UIManager::handleTimezoneTouch(const TouchCal::Sample& touch) {
+  if (isInRect(touch.x, touch.y, 16, 11, 58, 34)) {
+    showSettings();
     return;
   }
-
-  // Row 4: Brightness (visual: y=198, h=38)
-  if (touch.y >= 186 && touch.y <= 240) {
-    if (touch.x >= 200 && touch.x <= 330) {
-      uint8_t cur = settings_.getSettings().brightness;
-      uint8_t next = cur > 35 ? cur - 35 : 20;
-      settings_.setBrightness(next);
-      screenNeedsRedraw_ = true;
-      return;
-    }
-    if (touch.x >= 350 && touch.x <= 470) {
-      uint8_t cur = settings_.getSettings().brightness;
-      uint8_t next = cur < 220 ? cur + 35 : 255;
-      settings_.setBrightness(next);
-      screenNeedsRedraw_ = true;
+  for (size_t row = 0; row < 5; ++row) {
+    const size_t index = timezonePage_ * 5 + row;
+    if (index < kTimezoneCount && isInRect(touch.x, touch.y, 16, 60 + row * 40, 448, 36)) {
+      settings_.setTimezone(kTimezoneTable[index].name);
+      showSettings();
       return;
     }
   }
-
-  // Row 5: Bottom action buttons (visual: y=252, h=42)
-  if (touch.y >= 241) {
-    if (touch.x < 240) {
-      startWifiSetup();
-      return;
-    } else {
-      showAbout();
-      return;
-    }
+  if (isInRect(touch.x, touch.y, 16, 275, 90, 36) && timezonePage_ > 0) {
+    --timezonePage_;
+  } else if (isInRect(touch.x, touch.y, 374, 275, 90, 36) && (timezonePage_ + 1) * 5 < kTimezoneCount) {
+    ++timezonePage_;
   }
+  screenNeedsRedraw_ = true;
 }
 
 void UIManager::handleWifiSetupTouch(const TouchCal::Sample& touch) {
@@ -1009,7 +1027,7 @@ void UIManager::drawSettingValue(TFT_eSPI& tft, int y, const char* label,
   tft.setTextDatum(MR_DATUM);
   tft.setTextColor(currentTheme_.text, currentTheme_.panel);
   tft.drawString(value, 434, y + 20);
-  tft.drawFastHLine(34, y + 39, 400, currentTheme_.border);
+  tft.drawFastHLine(34, y + 35, 400, currentTheme_.border);
 }
 
 void UIManager::renderCountdowns(TFT_eSPI& tft, const TouchCal::Sample& touch) {
@@ -1154,21 +1172,41 @@ void UIManager::renderSettings(TFT_eSPI& tft, const TouchCal::Sample& touch) {
   drawPageHeader(tft, "A CLOCK THAT FEELS LIKE YOU", "Make it yours");
   fillRoundedRect(tft, 16, 58, kWidth - 32, 238, 12, currentTheme_.panel);
   const Settings& s = settings_.getSettings();
-  drawSettingValue(tft, 58, "TIME FORMAT", s.use24Hour ? "24 hour  >" : "12 hour / AM PM  >");
-  drawSettingValue(tft, 102, "CLOCK LAYOUT", kLayoutNames[s.layoutId % LAYOUT_COUNT]);
-  drawSettingValue(tft, 146, "COLOR PALETTE", kThemeNames[s.themeId % THEME_COUNT]);
+  drawSettingValue(tft, 56, "TIMEZONE", s.timezone);
+  drawSettingValue(tft, 92, "TIME FORMAT", s.use24Hour ? "24 hour  >" : "12 hour / AM PM  >");
+  drawSettingValue(tft, 128, "CLOCK LAYOUT", kLayoutNames[s.layoutId % LAYOUT_COUNT]);
+  drawSettingValue(tft, 164, "COLOR PALETTE", kThemeNames[s.themeId % THEME_COUNT]);
 
   tft.setTextDatum(ML_DATUM); tft.setTextFont(2);
   tft.setTextColor(currentTheme_.textMuted, currentTheme_.panel);
-  tft.drawString("BRIGHTNESS", 34, 220);
-  drawButton(tft, 250, 197, 48, 38, "-", currentTheme_.panelAlt, currentTheme_.textMuted);
+  tft.drawString("BRIGHTNESS", 34, 223);
+  drawButton(tft, 250, 205, 48, 36, "-", currentTheme_.panelAlt, currentTheme_.textMuted);
   char brightness[8]; snprintf(brightness, sizeof(brightness), "%d", s.brightness);
   tft.setTextDatum(MC_DATUM); tft.setTextColor(currentTheme_.text, currentTheme_.panel);
-  tft.drawString(brightness, 350, 216);
-  drawButton(tft, 402, 197, 48, 38, "+", currentTheme_.panelAlt, currentTheme_.textMuted);
+  tft.drawString(brightness, 350, 223);
+  drawButton(tft, 402, 205, 48, 36, "+", currentTheme_.panelAlt, currentTheme_.textMuted);
 
   drawButton(tft, 24, 250, 200, 36, "Wi-Fi & connection", currentTheme_.panelAlt, currentTheme_.text);
   drawButton(tft, 256, 250, 200, 36, "About this Clocky", currentTheme_.panelAlt, currentTheme_.text);
+}
+
+void UIManager::renderTimezone(TFT_eSPI& tft) {
+  drawPageHeader(tft, "TIME & PLACE", "Choose timezone");
+  for (size_t row = 0; row < 5; ++row) {
+    const size_t index = timezonePage_ * 5 + row;
+    if (index >= kTimezoneCount) break;
+    const bool selected = strcmp(settings_.getSettings().timezone, kTimezoneTable[index].name) == 0;
+    drawButton(tft, 16, 60 + row * 40, 448, 36, kTimezoneTable[index].name,
+               selected ? currentTheme_.accent : currentTheme_.panel,
+               selected ? currentTheme_.textOnAccent : currentTheme_.text);
+  }
+  if (timezonePage_ > 0) drawButton(tft, 16, 275, 90, 36, "< Prev", currentTheme_.panel, currentTheme_.text);
+  if ((timezonePage_ + 1) * 5 < kTimezoneCount) drawButton(tft, 374, 275, 90, 36, "Next >", currentTheme_.panel, currentTheme_.text);
+  char page[24];
+  snprintf(page, sizeof(page), "Page %u / %u", timezonePage_ + 1, static_cast<unsigned>((kTimezoneCount + 4) / 5));
+  tft.setTextFont(2); tft.setTextDatum(MC_DATUM);
+  tft.setTextColor(currentTheme_.textMuted, currentTheme_.bg);
+  tft.drawString(page, 240, 293);
 }
 
 void UIManager::renderWifiSetup(TFT_eSPI& tft) {
@@ -1176,6 +1214,29 @@ void UIManager::renderWifiSetup(TFT_eSPI& tft) {
   fillRoundedRect(tft, 16, 58, kWidth - 32, 238, 12, currentTheme_.panel);
   tft.setTextDatum(MC_DATUM); tft.setTextFont(2);
   tft.setTextColor(currentTheme_.accent, currentTheme_.panel);
+  if (wifi_ && wifi_->isConnected()) {
+    tft.drawString("CONNECTED TO WI-FI", 240, 82);
+    tft.setTextColor(currentTheme_.text, currentTheme_.panel);
+    String ssid = wifi_->getSSID();
+    while (tft.textWidth(ssid) > 392 && ssid.length()) ssid.remove(ssid.length() - 1);
+    tft.drawString(ssid, 240, 112);
+    tft.drawFastHLine(44, 134, 392, currentTheme_.border);
+    tft.setTextColor(currentTheme_.textMuted, currentTheme_.panel);
+    tft.drawString("DEVICE IP ADDRESS", 240, 159);
+    tft.setTextFont(4);
+    tft.setTextColor(currentTheme_.accent, currentTheme_.panel);
+    tft.drawString(wifi_->getIP(), 240, 191);
+    tft.setTextFont(2);
+    tft.setTextColor(currentTheme_.textMuted, currentTheme_.panel);
+    tft.drawString("Open this address on the same Wi-Fi network", 240, 226);
+    char url[24];
+    snprintf(url, sizeof(url), "http://%s", wifi_->getIP());
+    tft.setTextColor(currentTheme_.accent, currentTheme_.panel);
+    tft.drawString(url, 240, 253);
+    tft.setTextColor(currentTheme_.textMuted, currentTheme_.panel);
+    tft.drawString("Tap anywhere to go back", 240, 282);
+    return;
+  }
   tft.drawString("CLOCKY SETUP HOTSPOT IS READY", 240, 82);
   tft.setTextFont(4); tft.setTextColor(currentTheme_.text, currentTheme_.panel);
   tft.drawString("Let's get you online.", 240, 112);

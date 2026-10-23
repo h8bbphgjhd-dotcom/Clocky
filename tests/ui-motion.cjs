@@ -13,6 +13,7 @@ const root = path.resolve(__dirname, '..');
     await page.route('http://clocky.test/**', route => {
       const name = new URL(route.request().url()).pathname;
       const fixtures = {
+        '/api/timezones': ['UTC', 'America/Denver', 'Europe/London', 'Asia/Tokyo'],
         '/api/settings': { timezone: 'America/Denver', brightness: 200 },
         '/api/status': { connected: true },
         '/api/countdowns': [],

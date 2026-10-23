@@ -32,7 +32,7 @@ class CYDClockApp {
     this.countdowns = [];
     this.status = null;
     this.timezones = [
-      'UTC', 'America/Los_Angeles', 'America/Denver', 'America/Chicago', 'America/New_York',
+      'UTC', 'GMT', 'America/Phoenix', 'America/Los_Angeles', 'America/Denver', 'America/Chicago', 'America/New_York',
       'America/Anchorage', 'Pacific/Honolulu', 'America/Toronto', 'America/Vancouver',
       'Europe/London', 'Europe/Paris', 'Europe/Berlin', 'Europe/Rome', 'Europe/Madrid',
       'Europe/Amsterdam', 'Europe/Stockholm', 'Europe/Oslo', 'Europe/Copenhagen',
@@ -166,6 +166,16 @@ class CYDClockApp {
   }
   
   async loadTimezones() {
+    try {
+      const response = await fetch('/api/timezones');
+      if (!response.ok) throw new Error('Timezone list unavailable');
+      const zones = await response.json();
+      if (Array.isArray(zones) && zones.length && zones.every(zone => typeof zone === 'string' && this.validZone(zone))) {
+        this.timezones = zones;
+      }
+    } catch (_) {
+      // Keep the bundled choices available with older firmware.
+    }
     this.timezoneSelect.innerHTML = this.timezones.map(tz => 
       `<option value="${tz}">${tz}</option>`
     ).join('');
@@ -204,6 +214,7 @@ class CYDClockApp {
         const data = JSON.parse(event.data);
         if (data.type === 'time') {
           this.acceptEpoch(data.epoch);
+          this.acceptTimezone(data.timezone);
           if (data.focus && !this.focusBusy) this.applyFocus(data.focus);
           this.updateClockPreview(data.time, data.date, data.weekday);
         } else if (data.type === 'countdowns') {
@@ -251,6 +262,7 @@ class CYDClockApp {
       if (!resp.ok) throw new Error('Device status unavailable');
       this.status = await resp.json();
       this.acceptEpoch(this.status.epoch);
+      this.acceptTimezone(this.status.timezone);
       this.updateStatusUI();
     } catch (e) {
       console.error('Failed to fetch status:', e);
@@ -261,6 +273,13 @@ class CYDClockApp {
     setInterval(() => this.fetchStatus(), 10000);
   }
   
+  acceptTimezone(zone) {
+    if (!this.settings || this.pendingSettings || !this.timezones.includes(zone) || this.settings.timezone === zone) return;
+    this.settings.timezone = zone;
+    this.timezoneSelect.value = zone;
+    this.applyAppearance();
+  }
+
   applySettingsToUI() {
     if (!this.settings) return;
     
@@ -531,6 +550,7 @@ class CYDClockApp {
     };
     const status = document.getElementById('saveStatus');
     status.textContent = 'Saving…';
+    this.pendingSettings = (this.pendingSettings || 0) + 1;
     this.applyAppearance();
     this.settingsQueue = (this.settingsQueue || Promise.resolve()).then(async () => {
       const resp = await fetch('/api/settings', {
@@ -539,10 +559,12 @@ class CYDClockApp {
       if (!resp.ok) throw new Error('Could not save settings. Please try again.');
       this.settings = { ...this.settings, ...settings };
       status.textContent = 'All changes saved';
+      this.refreshDashboard();
     }).catch(error => {
       status.textContent = 'Not saved · try again';
       this.toast(error.message, true);
-    });
+      if (this.pendingSettings === 1) this.applySettingsToUI();
+    }).finally(() => { --this.pendingSettings; });
     await this.settingsQueue;
   }
 

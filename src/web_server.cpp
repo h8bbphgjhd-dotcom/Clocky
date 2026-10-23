@@ -1,4 +1,5 @@
 #include "web_server.h"
+#include "timezones.h"
 #include <ArduinoJson.h>
 #include <LittleFS.h>
 #include <ESPAsyncWebServer.h>
@@ -105,6 +106,15 @@ void WebServerManager::setupRoutes() {
       return;
     }
     sendFocus(request);
+  });
+
+  server_->on("/api/timezones", HTTP_GET, [](AsyncWebServerRequest* request) {
+    JsonDocument doc;
+    JsonArray zones = doc.to<JsonArray>();
+    for (const auto& zone : kTimezoneTable) zones.add(zone.name);
+    String body;
+    serializeJson(doc, body);
+    request->send(200, "application/json", body);
   });
 
   // API: Settings
@@ -233,10 +243,11 @@ void WebServerManager::handlePutSettings(AsyncWebServerRequest* request, JsonVar
   bool changed = false;
   
   if (!obj["timezone"].isNull()) {
-    strlcpy(s.timezone, obj["timezone"] | "", sizeof(s.timezone));
-    g_instance->settings_.setTimezone(s.timezone);
-    g_instance->clock_.applyTimezone();
-    g_instance->clock_.forceSync();
+    const char* zone = obj["timezone"].is<const char*>() ? obj["timezone"].as<const char*>() : nullptr;
+    if (!g_instance->settings_.setTimezone(zone)) {
+      request->send(400, "application/json", "{\"error\":\"Choose a supported timezone\"}");
+      return;
+    }
     changed = true;
   }
   if (!obj["use24Hour"].isNull()) {
@@ -485,6 +496,7 @@ void WebServerManager::broadcastTime() {
   
   JsonDocument doc;
   doc["type"] = "time";
+  doc["timezone"] = clock_.getTimezone();
   
   char timeBuf[32], dateBuf[32], weekdayBuf[32];
   g_instance->clock_.formatTime(timeBuf, sizeof(timeBuf));
