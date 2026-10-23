@@ -67,6 +67,7 @@ Then build and upload the firmware:
 
 ```bash
 pio run --target upload
+pio run --target uploadfs
 ```
 
 ---
