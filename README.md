@@ -45,8 +45,9 @@ Clocky is designed for the **ESP32-2432S028R**, commonly known as the **Cheap Ye
 
 ### 1. Clone the repository
 
+*I recomend using github desktop*
+
 ```bash
-git clone https://github.com/h8bbphgjhd-dotcom/Clocky.git
 cd Clocky
 ````
 
